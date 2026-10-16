@@ -126,6 +126,10 @@ bind-lane rows.
 
 AGPLv3 - see `LICENSE`.
 
+This module is a port of [sbocq/janet-duckdb](https://github.com/sbocq/janet-duckdb)
+(MIT) adapted to the Jenny Stats typed-contract stack - the original
+work is sbocq's; full attribution also in the module header.
+
 ## AI assistance
 
 The code in this repository was written with the assistance of a
