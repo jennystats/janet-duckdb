@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install the pinned duckdb C library for the duckdb janet module
-# (janet-duckdb.janet). Detects the platform, fetches the official
+# (jennystats/duckdb.janet). Detects the platform, fetches the official
 # duckdb release zip, verifies sha256, extracts the library to
 # ~/.local/lib/duckdb/. Idempotent; re-run to reinstall.
 #
@@ -46,4 +46,4 @@ echo "$SHA256  $TMP/libduckdb.zip" | sha256sum -c -
 mkdir -p "$DEST"
 unzip -o -j "$TMP/libduckdb.zip" "$LIB" -d "$DEST"
 echo "installed: $DEST/$LIB"
-echo "usage    : (import janet-duckdb) - resolution: \$DUCKDB_LIB, then the linux default path"
+echo "usage    : (import jennystats/duckdb) - resolution: \$DUCKDB_LIB, then the linux default path"

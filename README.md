@@ -34,7 +34,7 @@ data and statistics packages. Jenny is just Janet.
   logical mode where nested types arrive as tagged tuples.
 
 ```janet
-(import janet-duckdb)
+(import jennystats/duckdb)
 
 (with [db (janet-duckdb/open ":memory:")]
   (with [conn (janet-duckdb/connect db)]
@@ -58,7 +58,7 @@ data and statistics packages. Jenny is just Janet.
 Prefer shorter call sites? Alias at import:
 
 ```janet
-(import janet-duckdb :as duckdb)
+(import jennystats/duckdb :as duckdb)
 (duckdb/rows (duckdb/query conn "SELECT 41 + 1 AS v"))  # @[{:v 42}]
 ```
 
