@@ -4,7 +4,10 @@ In-process DuckDB for Janet, via core ffi - no jpm native module, no C
 build. It opens a DuckDB database inside the Janet process and hands
 back handles: prepared statements, the full type matrix on both read
 and bind, column-major result access, and a packed f32 lane that feeds
-numeric kernels without a Janet element hop.
+numeric kernels without a Janet element hop. All jenny modules
+install under a `jennystats/` namespace directory - collision-proof
+against bare-name shadowing, by construction. Prefer a shorter call
+prefix? Alias at import (shown in the usage below).
 
 Part of [Jenny Stats](https://github.com/jennystats), a home for Janet
 data and statistics packages. Jenny is just Janet.
@@ -34,7 +37,7 @@ data and statistics packages. Jenny is just Janet.
   logical mode where nested types arrive as tagged tuples.
 
 ```janet
-(import janet-duckdb)
+(import jennystats/duckdb)
 
 (with [db (janet-duckdb/open ":memory:")]
   (with [conn (janet-duckdb/connect db)]
@@ -58,7 +61,7 @@ data and statistics packages. Jenny is just Janet.
 Prefer shorter call sites? Alias at import:
 
 ```janet
-(import janet-duckdb :as duckdb)
+(import jennystats/duckdb :as duckdb)
 (duckdb/rows (duckdb/query conn "SELECT 41 + 1 AS v"))  # @[{:v 42}]
 ```
 

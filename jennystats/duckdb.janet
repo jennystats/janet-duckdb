@@ -1,4 +1,4 @@
-# janet-duckdb.janet  -  in-process duckdb for janet via core ffi (no jpm, no C build).
+# jennystats/duckdb.janet  -  in-process duckdb for janet via core ffi (no jpm, no C build).
 #
 # Port of sbocq/janet-duckdb (MIT) adapted to a typed-contract stack:
 # defn/typed contracts, no judge, single self-contained file, pinned C API.
@@ -25,8 +25,8 @@
 # Handles close via (:close handle) - `with` works. params optional in the
 # variadic wrappers; typed cores carry the contracts.
 
-(import typed :prefix "")
-(import janet-num) # pack-columns-f32 uses the janet-num C-to-C kernel
+(import jennystats/typed :prefix "")
+(import jennystats/num) # pack-columns-f32 uses the janet-num C-to-C kernel
 
 #==------------------------------------------------------------------------==#
 # Lib resolution
@@ -1123,7 +1123,7 @@
   # memory) -> janet-num interleave kernel -> row-major f32 packed
   # buffer. ZERO janet elements cross the boundary. Columns must be
   # DOUBLE; NULLs become NaN (xgboost `missing` semantics). Returns
-  # the same handle shape as janet-num/pack-columns-f32, so
+  # the same handle shape as num/pack-columns-f32, so
   # xgboost/dmatrix-from-packed consumes it directly.
   ((conn :assert-valid) conn)
   (with [result (query* conn sql)]
@@ -1151,7 +1151,7 @@
         (def vec (duckdb_data_chunk_get_vector chunk c))
         (array/push data-ptrs (duckdb_vector_get_data vec))
         (array/push mask-ptrs (duckdb_vector_get_validity vec)))
-      (janet-num/interleave-chunk-f32 (ffi/write @[:ptr ncol] data-ptrs)
+      (num/interleave-chunk-f32 (ffi/write @[:ptr ncol] data-ptrs)
                                       (ffi/write @[:ptr ncol] mask-ptrs)
                                       ncol size row-offset out)
       (+= row-offset size))

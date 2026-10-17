@@ -6,9 +6,9 @@
 (unless (get (os/environ) "JANET_PATH")
   (setdyn *syspath* (string (or (get (os/environ) "HOME") (error "HOME not set"))
                              "/.local/lib/janet")))
-(import typed :prefix "")
-(import kit :prefix "")
-(import janet-duckdb :as duckdb)
+(import jennystats/typed :prefix "")
+(import jennystats/kit :prefix "")
+(import jennystats/duckdb :as duckdb)
 
 (def SQL
   "SELECT i % 100 AS g, sum(i) AS s, avg(i) AS a

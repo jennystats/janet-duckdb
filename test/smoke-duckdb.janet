@@ -1,7 +1,7 @@
 # smoke-duckdb  -  conformance: exact-table queries, type round-trips,
 # prepared statements, error paths. Requires libduckdb (SKIP if absent  -
 # run_tests.sh decides SKIP vs run; this file only runs when the lib exists).
-(import janet-duckdb :as duckdb)
+(import jennystats/duckdb :as duckdb)
 
 (defn assert-eq [a b msg]
   (unless (deep= a b) (errorf "FAIL %s: %q != %q" msg a b)))
@@ -150,18 +150,18 @@
 (when (os/stat dbfile) (os/rm dbfile))
 
 # -- C-to-C handoff: duckdb/pack-columns-f32 + xgboost parity ----------------------
-(import janet-num)
+(import jennystats/num)
 (duckdb/exec conn "CREATE TABLE cc AS
   SELECT (i * 1.5)::DOUBLE AS a, (i * 2.25 + 0.5)::DOUBLE AS b,
          CASE WHEN i % 7 = 3 THEN NULL ELSE (i * -0.75)::DOUBLE END AS c
   FROM range(10000) t2(i)")
 (def cc3 (duckdb/pack-columns-f32 conn "SELECT a, b, c FROM cc ORDER BY a"))
 (assert-eq [(cc3 :nrow) (cc3 :ncol)] [10000 3] "cc packed shape")
-(def cc-slice (janet-num/packed-slice-f32 cc3 12))
+(def cc-slice (num/packed-slice-f32 cc3 12))
 (assert (nan? (cc-slice 11)) "C-to-C NULL -> NaN (row 3 col c)")
 (assert (not (nan? (cc-slice 0))) "C-to-C non-NULL stays a value")
 (def cc-arrs ((duckdb/columns (duckdb/query conn "SELECT a, b FROM cc ORDER BY a")) :columns))
-(def cc-jj (janet-num/pack-columns-f32 cc-arrs))
+(def cc-jj (num/pack-columns-f32 cc-arrs))
 (def cc-cc2 (duckdb/pack-columns-f32 conn "SELECT a, b FROM cc ORDER BY a"))
 (assert-eq (string (cc-cc2 :ptr)) (string (cc-jj :ptr))
   "C-to-C packed == janet-arrays packed (byte-identical)")
@@ -317,8 +317,8 @@
 (def d1-out "/tmp/duckdb-smoke-d1.txt")
 (os/execute ["/bin/sh" "-c" (string
   "DUCKDB_LIB=/tmp/nonexistent-d1/libduckdb.so"
-  " JANET_PATH=" (or (get (os/environ) "JANET_PATH") "modules:tests/lib")
-  " janet -e '(def [_ e] (protect (import janet-duckdb :as duckdb))) (print e)' > " d1-out " 2>&1")])
+  " JANET_PATH=" (or (get (os/environ) "JANET_PATH") ".:tests/lib")
+  " janet -e '(def [_ e] (protect (import jennystats/duckdb :as duckdb))) (print e)' > " d1-out " 2>&1")])
 (def d1-msg (string/trim (string (slurp d1-out))))
 (assert (string/find "install-duckdb.sh" d1-msg)
         (string "D1: guard must name the installer, got: " d1-msg))
@@ -378,7 +378,7 @@
                "T2 table config opens and queries")))
 
 # -- T3: json :null keyword binds SQL NULL -------------------------------------
-(import json)
+(import jennystats/json)
 (roundtrip-row "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st"
   [{:k "a" :n :null}] {:st {:k "a" :n nil}})
 (roundtrip-row "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st"
@@ -480,7 +480,7 @@
   (def out "/tmp/duckdb-smoke-sub.txt")
   (spit script code)
   (def rc (os/execute ["/bin/sh" "-c" (string
-    "JANET_PATH=" (or (get (os/environ) "JANET_PATH") "modules:tests/lib")
+    "JANET_PATH=" (or (get (os/environ) "JANET_PATH") ".:tests/lib")
     " janet " script " > " out " 2>&1")]))
   (def msg (string/trim (string (slurp out))))
   (when (os/stat out) (os/rm out))
@@ -488,7 +488,7 @@
   [rc msg])
 
 (defn probe-common []
-  "(import janet-duckdb :as duckdb)
+  "(import jennystats/duckdb :as duckdb)
    (def db (duckdb/open \":memory:\"))
    (def conn (duckdb/connect db))
    (def p (fn [e] (print \"ERR \" e)))
