@@ -4,13 +4,41 @@ In-process DuckDB for Janet, via core ffi - no jpm native module, no C
 build. It opens a DuckDB database inside the Janet process and hands
 back handles: prepared statements, the full type matrix on both read
 and bind, column-major result access, and a packed f32 lane that feeds
-numeric kernels without a Janet element hop. All jenny modules
-install under a `jennystats/` namespace directory - collision-proof
-against bare-name shadowing, by construction. Prefer a shorter call
-prefix? Alias at import (shown in the usage below).
+numeric kernels without a Janet element hop.
 
 Part of [Jenny Stats](https://github.com/jennystats), a home for Janet
 data and statistics packages. Jenny is just Janet.
+
+## Quick start
+
+All jenny modules install under a `jennystats/` namespace directory:
+`(import jennystats/duckdb)` - collision-proof against bare-name
+shadowing of core symbols or other packages, by construction.
+
+```janet
+(import jennystats/duckdb :as duckdb)
+
+(with [db (duckdb/open ":memory:")]
+  (with [conn (duckdb/connect db)]
+    (duckdb/exec conn "CREATE TABLE t (i INTEGER, s VARCHAR)")
+    (duckdb/exec conn "INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+    (def rows (duckdb/rows
+                (duckdb/query conn "SELECT * FROM t ORDER BY i")))
+    # @[{:i 1 :s "a"} {:i 2 :s "b"}]
+
+    # bind: cast in SQL, value in params
+    (with [stmt (duckdb/prepare conn
+                 "SELECT ?::INTEGER AS i, ?::VARCHAR AS s")]
+      (def res (duckdb/execute stmt [7 "seven"]))
+      (printf "%q" (duckdb/first-row res))))  # {:i 7 :s "seven"}
+
+    # C-to-C feed for numeric kernels: all-DOUBLE query, NULL -> NaN
+    (def packed (duckdb/pack-columns-f32 conn
+      "SELECT i::DOUBLE AS a, (s IS NULL)::DOUBLE AS b FROM t"))))
+```
+
+The `:as` alias is the form used in this repo's tests; the plain
+import gives the same call sites with the `duckdb/` prefix.
 
 ## What it is
 
@@ -35,35 +63,6 @@ data and statistics packages. Jenny is just Janet.
   downstream C kernels.
 - **describe-columns**: per-column type metadata, with an optional
   logical mode where nested types arrive as tagged tuples.
-
-```janet
-(import jennystats/duckdb)
-
-(with [db (janet-duckdb/open ":memory:")]
-  (with [conn (janet-duckdb/connect db)]
-    (janet-duckdb/exec conn "CREATE TABLE t (i INTEGER, s VARCHAR)")
-    (janet-duckdb/exec conn "INSERT INTO t VALUES (1, 'a'), (2, 'b')")
-    (def rows (janet-duckdb/rows
-                (janet-duckdb/query conn "SELECT * FROM t ORDER BY i")))
-    # @[{:i 1 :s "a"} {:i 2 :s "b"}]
-
-    # bind: cast in SQL, value in params
-    (with [stmt (janet-duckdb/prepare conn
-                 "SELECT ?::INTEGER AS i, ?::VARCHAR AS s")]
-      (def res (janet-duckdb/execute stmt [7 "seven"]))
-      (printf "%q" (janet-duckdb/first-row res)))  # {:i 7 :s "seven"}
-
-    # C-to-C feed for numeric kernels: all-DOUBLE query, NULL -> NaN
-    (def packed (janet-duckdb/pack-columns-f32 conn
-      "SELECT i::DOUBLE AS a, (s IS NULL)::DOUBLE AS b FROM t"))))
-```
-
-Prefer shorter call sites? Alias at import:
-
-```janet
-(import jennystats/duckdb :as duckdb)
-(duckdb/rows (duckdb/query conn "SELECT 41 + 1 AS v"))  # @[{:v 42}]
-```
 
 The behavioural specification is `specs/api-contract.md` (v1.6): the
 full type matrix, preconditions, ownership, error taxonomy and the
