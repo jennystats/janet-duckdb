@@ -22,6 +22,12 @@
 #   (prepare conn sql)             -> stmt    {:ptr :param-names :param-types :close}
 #   (execute stmt &opt params)     -> result  (positional tuple/array | named struct/table)
 #   (library-version)              -> string
+# Bind contract (0.1.3): a parameter duckdb reports as :unknown binds by the
+# value's own type - string VARCHAR, whole number BIGINT, other number
+# DOUBLE, boolean BOOLEAN - and any other value raises naming its type.
+# duckdb deliberately leaves an uninferrable parameter open and expects the
+# client to supply the type; the common trigger is any parameter following a
+# parameterised read_parquet argument.
 # Handles close via (:close handle) - `with` works. params optional in the
 # variadic wrappers; typed cores carry the contracts.
 
@@ -837,6 +843,23 @@
     (if (index-of (string k) (keys janet-value))
       (get janet-value (string k))
       (errorf "duckdb: struct field %q missing from %q" k janet-value))))
+
+(defn/typed infer-param-type {:args [:any] :ret :keyword} [janet-value]
+  "The column type a bind value carries when duckdb reports the parameter
+  type as unknown: string VARCHAR, whole number BIGINT, other number DOUBLE,
+  boolean BOOLEAN. Any other value raises, naming it - an unknown parameter
+  is never silently coerced to a JSON-like surrogate type."
+  (cond
+    (string? janet-value) :varchar
+    (boolean? janet-value) :bool
+    (and (number? janet-value) (not (nan? janet-value))
+         (= janet-value (math/floor janet-value))
+         (>= janet-value -9007199254740992)
+         (<= janet-value 9007199254740992)) :bigint
+    (number? janet-value) :double
+    (errorf "duckdb: parameter type unknown and no column type is implied by a %s value"
+            (type janet-value))))
+
 (defn/typed janet-to-duckdb-value {:args [:any :any :any] :ret :any} [janet-value simplified-type logical-type-ptr]
   "Encode a janet value to a duckdb_value under the parameter's
   simplified logical type; nil encodes NULL, as does the :null
@@ -949,7 +972,11 @@
             (def duckdb-val (janet-to-duckdb-value value (get (meta :tag-types) tag-idx) member-ptr))
             (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val)))
         :unknown
-        (errorf "duckdb: parameter type unknown  -  add a cast in SQL (e.g. ?::INTEGER)")
+        # duckdb leaves a parameter it cannot infer as :unknown and expects
+        # the client to supply the type. Infer from the janet value, then
+        # bind through the normal path; a value with no faithful column
+        # type still raises.
+        (janet-to-duckdb-value janet-value (infer-param-type janet-value) logical-type-ptr)
         (errorf "duckdb: unsupported complex type for binding: %q" type-key)))
 
     (errorf "duckdb: bad simplified type %q" simplified-type)))

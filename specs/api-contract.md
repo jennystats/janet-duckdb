@@ -154,10 +154,9 @@ Public surface (everything else in the module is internal):
   parameter without a usable logical type even inside casts, so
   prepared DECIMAL params raise; carry decimals as SQL literals or
   bind a DOUBLE and cast in the SELECT list.
-- **Unknown parameter type** (`SELECT ?` with no cast): raises "add a
-  cast in SQL" - duckdb reports such parameters without a usable type
-  until the SQL pins one. This replaces duckdb's own "unknown type
-  id 0".
+- **Unknown parameter type** (`SELECT ?` with no cast): SUPERSEDED in
+  0.1.3 (below) - duckdb reports such parameters without a usable type
+  until the SQL pins one; the bind now infers the type from the value.
 - Statements are reusable: `execute` binds fresh params each call;
   `clear-bindings` (internal) resets between rounds. Public users
   re-execute without clearing.
@@ -311,3 +310,12 @@ Changes:
   ns-scale band rule and DECIMAL bind cut documented from the
   measured evidence.
 - **v1.0 (2026-10-14)**: first written contract.
+- **v1.3 (0.1.3)**: uninferrable parameters bind by the value's own
+  type - string VARCHAR, whole number BIGINT, other number DOUBLE,
+  boolean BOOLEAN; any other value raises naming its type. duckdb
+  deliberately leaves such a parameter open (upstream design: the
+  client supplies the type); the common trigger is any parameter
+  following a parameterised read_parquet argument. The DECIMAL hard
+  cut and the explicit-cast discipline are unchanged - inference is
+  the fallback on the open parameter, never a replacement for casts
+  where a type is already pinned.

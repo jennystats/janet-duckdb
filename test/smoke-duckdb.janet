@@ -127,8 +127,12 @@
 (assert-raises (fn [] (duckdb/open "/nonexistent/dir/x.db")) "IO Error")
 (assert-raises (fn [] (with [stmt (duckdb/prepare conn "SELECT ?::INTEGER")] (duckdb/execute stmt [1 2])))
                "out of range")
-(assert-raises (fn [] (with [stmt (duckdb/prepare conn "SELECT ?")] (duckdb/execute stmt [1])))
-               "cast in SQL")
+# 0.1.3: a bare uninferrable parameter now binds by the value's own type
+# instead of raising
+(assert-eq @[(tuple 1 2)]
+           (with [r (duckdb/query conn "SELECT ? AS a, ? AS b" [1 2])]
+             (duckdb/rows r false :tuple))
+           "uninferrable parameter binds by inferred type")
 
 # -- multi-query on one open db (the point of in-process) ----------------------
 (assert-eq 1 (duckdb/exec conn "DELETE FROM people WHERE id = 2") "exec delete")
@@ -535,6 +539,39 @@
    (print \"duckdb-sub idempotent\")"))]
   (assert (and (= rc 0) (string/find "idempotent" msg))
           (string "double-close must stay idempotent, got rc " rc ": " msg)))
+
+# -- uninferrable parameter types (0.1.3) ------------------------------------
+# duckdb leaves a parameter it cannot infer as :unknown and expects the
+# client to supply the type. The bind infers it from the value; a value with
+# no faithful column type still raises. The trigger: any parameter following
+# a parameterised read_parquet argument in the same statement.
+(duckdb/exec conn "COPY (SELECT range AS id FROM range(6)) TO '/tmp/jdd-smoke.parquet' (FORMAT PARQUET)")
+(defn pq-rows [sql params]
+  (with [r (duckdb/query conn sql params)] (duckdb/rows r false :tuple)))
+(def p "/tmp/jdd-smoke.parquet")
+(assert-eq 3
+  (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) LIMIT ?::BIGINT" [p 3]))
+  "u1 uninferrable path+limit binds (integer -> BIGINT)")
+(assert-eq 1
+  (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE id = ?::BIGINT" [p 2]))
+  "u2 uninferrable path+integer filter binds")
+(assert-eq 5
+  (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE id < ?::DOUBLE" [p 5.0]))
+  "u3 uninferrable path+double binds (float -> DOUBLE)")
+(assert-eq 2
+  (length (pq-rows "SELECT a.id FROM read_parquet(?::VARCHAR) a
+                    JOIN read_parquet(?::VARCHAR) b USING (id) LIMIT ?::BIGINT" [p p 2]))
+  "u4 two uninferrable path parameters bind")
+(assert-eq [6 0]
+  [(length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)" [p true]))
+   (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)" [p false]))]
+  "u5 uninferrable boolean binds")
+(assert-eq 5
+  (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) LIMIT 5" [p]))
+  "u6 path-last single parameter still binds")
+(assert-raises (fn [] (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)"
+                               [p @[:not-a-bind-value]]))
+  "no column type is implied")
 
 # -- teardown ---------------------------------------------------------------------
 (:close conn)
