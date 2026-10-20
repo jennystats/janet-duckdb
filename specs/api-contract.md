@@ -1,4 +1,4 @@
-# Spec - janet-duckdb public API contract (v1.6, libduckdb 1.5.6)
+# Spec - janet-duckdb public API contract (v1.7, libduckdb 1.5.6)
 
 Prose contract (a formal specification language is not the right tool
 here; the duckdb C API is the external truth). Canonical signatures: the module
@@ -250,6 +250,15 @@ bump, smoke updates, consumers re-verified, one commit.
 
 Changes:
 
+- **v1.7 (0.1.3)**: uninferrable parameters bind by the value's own
+  type - string VARCHAR, whole number BIGINT, other number DOUBLE,
+  boolean BOOLEAN; any other value raises naming its type. duckdb
+  deliberately leaves such a parameter open (upstream design: the
+  client supplies the type); the common trigger is any parameter
+  following a parameterised read_parquet argument. The DECIMAL hard
+  cut and the explicit-cast discipline are unchanged - inference is
+  the fallback on the open parameter, never a replacement for casts
+  where a type is already pinned.
 - **v1.6 (2026-10-16)**: the libduckdb pin moved 1.5.5 -> 1.5.6
   (bugfix and security release, same Variegata line). Installer pins updated to the official
   release digests on all four platforms; linux-amd64 verified
@@ -310,12 +319,3 @@ Changes:
   ns-scale band rule and DECIMAL bind cut documented from the
   measured evidence.
 - **v1.0 (2026-10-14)**: first written contract.
-- **v1.3 (0.1.3)**: uninferrable parameters bind by the value's own
-  type - string VARCHAR, whole number BIGINT, other number DOUBLE,
-  boolean BOOLEAN; any other value raises naming its type. duckdb
-  deliberately leaves such a parameter open (upstream design: the
-  client supplies the type); the common trigger is any parameter
-  following a parameterised read_parquet argument. The DECIMAL hard
-  cut and the explicit-cast discipline are unchanged - inference is
-  the fallback on the open parameter, never a replacement for casts
-  where a type is already pinned.

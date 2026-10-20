@@ -47,7 +47,10 @@ import gives the same call sites with the `duckdb/` prefix.
   on every kind.
 - **Prepared statements**: `(prepare conn sql)` + `(execute stmt
   params)` - positional tuple/array or named struct (`$1` or `$name`
-  styles). Every bind goes through duckdb's own parameter interface.
+  styles). Every bind goes through duckdb's own parameter interface;
+  a parameter duckdb leaves without an inferred type (any parameter
+  following a parameterised `read_parquet` argument, for example)
+  binds by the value's own type.
 - **Full type matrix, read and bind**: integers, floats, VARCHAR,
   BLOB, DATE, TIMESTAMP and its variants, TIME WITH TIME ZONE,
   INTERVAL, ENUM, DECIMAL, LIST, STRUCT, MAP, UNION. Values bind with
@@ -64,7 +67,7 @@ import gives the same call sites with the `duckdb/` prefix.
 - **describe-columns**: per-column type metadata, with an optional
   logical mode where nested types arrive as tagged tuples.
 
-The behavioural specification is `specs/api-contract.md` (v1.6): the
+The behavioural specification is `specs/api-contract.md` (v1.7): the
 full type matrix, preconditions, ownership, error taxonomy and the
 libduckdb version coupling.
 
