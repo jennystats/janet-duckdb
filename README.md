@@ -92,6 +92,23 @@ Lib resolution at import: `$DUCKDB_LIB`, then
 `~/.local/lib/duckdb/libduckdb.so`, then the system dlopen search.
 The import fails with an actionable message if none loads.
 
+## The bundled engine: what's inside
+
+The pinned `libduckdb` statically links the `icu` and `parquet`
+extensions only. Other core extensions - notably `httpfs` (S3/HTTP
+Parquet reads) and `quack` (remote serving and ATTACH) - are not
+bundled. Enable them with a one-time install inside your own SQL:
+
+```janet
+(duckdb/exec conn "INSTALL quack")
+(duckdb/exec conn "LOAD quack")
+```
+
+`INSTALL` downloads a signed extension binary and needs network access;
+the download is cached under `~/.duckdb/extensions/`. Extension
+availability is a property of the bundled DuckDB build, not of this
+module - it is re-verified at every engine pin bump.
+
 ## Tests
 
 ```bash
