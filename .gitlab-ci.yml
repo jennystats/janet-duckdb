@@ -7,6 +7,7 @@ include:
     file: /templates/gate.yml
     inputs:
       project_name: "janet-duckdb"
+      module_name: "duckdb"
       janet_setup: "libs/install-duckdb.sh"
       native_needs: "duckdb"
       pm_expected_red: "true"
