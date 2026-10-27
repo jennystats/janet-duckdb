@@ -1197,43 +1197,147 @@
 # Public variadic wrappers (dispatch-only; contracts live in the typed cores)
 #==------------------------------------------------------------------------==#
 
-(defn open "Open a duckdb database (default :memory:), optionally
-  with a config map of duckdb options; returns a db handle." [path &opt config-map]
+(defn open
+  "Open a duckdb database and return a db handle. `path` defaults to
+  \":memory:\" but must still be passed - the function is not callable
+  with no arguments; a filesystem path opens or creates that database
+  file.
+
+  `config-map` is an optional struct or table of duckdb configuration
+  options. Names are case-insensitive and values must be
+  string-coercible (strings, numbers and keywords coerce). Janet
+  structs and tables cannot hold nil, so a nil-valued option simply is
+  not there.
+
+  The handle carries `:close` (idempotent - a second close is a no-op;
+  `with` works) and `:assert-valid`, which raises \"db already closed\"
+  on any use after close. Close a conn before its db.
+
+  Raises when the config map is neither struct nor table, when duckdb
+  rejects an option (the message names it), and when the database
+  cannot be opened (duckdb's own message). Raises at import, not here,
+  when libduckdb itself cannot be loaded - resolution is
+  `$DUCKDB_LIB`, then `~/.local/lib/duckdb/libduckdb.so`, then the
+  system search, and the load is probed before anything else runs."
+  [path &opt config-map]
   (default path ":memory:")
   (default config-map {})
   (open* path config-map))
 
-(defn query "Run SQL on a conn; with params (positional tuple/array
-  or named struct/table) the statement is prepared, bound and
-  destroyed in one call." [conn sql &opt params]
+(defn query
+  "Run SQL on a conn and return a result handle.
+
+  Without `params` the SQL goes straight through duckdb's own query
+  call. With `params` - a tuple or array (positional, 1-based) or a
+  struct or table (named) - the statement is prepared, the params are
+  bound, and the statement is destroyed again before the result
+  returns. Every bind goes through duckdb's parameter interface;
+  values are never interpolated into the SQL text. A parameter duckdb
+  leaves without an inferred type binds by the value's own type.
+
+  The result handle re-reads like a value: `rows`, `first-row` and
+  `columns` memoise the first fetch and may be called repeatedly, in
+  any order. Close it with `:close` (idempotent, `with` works).
+
+  SQL shape: with params a multi-statement string raises and nothing
+  executes. Without params every statement executes - all side effects
+  persist and any statement's error raises the call - and the first
+  SELECT's result is returned (the last statement's when there is no
+  SELECT). Empty or comment-only SQL returns a valid zero-column
+  result, not an error.
+
+  Raises when the conn is closed, when the params are neither
+  tuple/array nor struct/table, on a bind failure (see `prepare`), and
+  on a SQL error (duckdb's message). A bind error raises after the
+  statement is destroyed, so the handle does not leak."
+  [conn sql &opt params]
   (if params
     (with [stmt (prepare conn sql)] (execute* stmt params))
     (query* conn sql)))
 
-(defn rows "Result to an array of rows: structs (keywordised by
-  default) or tuples via coll-type :tuple. Re-reads of one open
-  result are memoised." [result &opt keywordize coll-type]
+(defn rows
+  "Convert a result handle to an array of rows.
+
+  By default each row is a struct keyed by the column names as
+  keywords; `keywordize` false keeps the names as strings. `coll-type`
+  selects the row shape - `:struct` (the default) or `:tuple` for
+  positionally indexed rows; any other value raises.
+
+  The handle's fetch is memoised on the first read, so `rows`,
+  `first-row` and `columns` return the same values however often and
+  in whatever order they are called - a result handle is a value, not
+  a one-shot cursor.
+
+  Returns the row array (empty for a zero-row result). Raises when the
+  result is already closed."
+  [result &opt keywordize coll-type]
   (default keywordize true)
   (default coll-type :struct)
   (result-rows result keywordize coll-type))
 
-(defn first-row "First row of a result, or nil when empty; the
-  same options as rows." [result &opt keywordize coll-type]
+(defn first-row
+  "First row of a result handle, or nil when the result has no rows.
+  Takes the same options as `rows`: `keywordize` (default true) and
+  `coll-type` (`:struct` default, or `:tuple`).
+
+  Shares the memoised fetch with `rows` and `columns`, so calling it
+  before or after them neither re-streams nor changes their answer.
+  Raises when the result is already closed or when `coll-type` is
+  neither of the two values."
+  [result &opt keywordize coll-type]
   (default keywordize true)
   (default coll-type :struct)
   (result-first result keywordize coll-type))
 
-(defn columns "Result to the column-major struct
-  {:column-names :column-types :columns :row-count} - the feed for
-  packed kernels and column-wise work. Re-reads are memoised." [result]
+(defn columns
+  "Convert a result handle to the column-major struct
+  `{:column-count :column-names :column-types :columns :row-count}`.
+  `:columns` is an array of per-column arrays; a column is reached by
+  index, `((columns result) :columns)`, not by name - the names live in
+  `:column-names`, in the same order as `:column-types`. `:row-count`
+  is 0 for a zero-column result.
+
+  This is the feed for packed kernels and column-wise work: no row
+  structs are built. The fetch is memoised, so repeated calls and any
+  order with `rows`/`first-row` give the same values.
+
+  Raises when the result is already closed."
+  [result]
   (fetch-columns result))
 
-(defn exec "Run SQL and return the number of rows changed; the
-  result handle is closed before returning." [conn sql &opt params]
+(defn exec
+  "Run SQL, return the number of rows changed, and close the result
+  handle before returning - so a successful call never leaks one.
+
+  `params`, when given, follow `query`'s rules exactly: positional as
+  tuple or array, named as struct or table, bound through duckdb's
+  parameter interface, with a multi-statement string refused when
+  params are supplied.
+
+  Raises on a closed conn, on a bind failure, and on a SQL error
+  (duckdb's message). Returns 0 for statements that change no rows
+  (a SELECT included)."
+  [conn sql &opt params]
   (with [result (query conn sql params)]
     (rows-changed result)))
 
-(defn execute "Execute a prepared statement with fresh params
-  (default none); returns a result handle." [stmt &opt params]
+(defn execute
+  "Execute a prepared statement with fresh params and return a result
+  handle. Omitted `params` is an empty tuple - right only for a
+  statement that takes no parameters; a parameterised statement reused
+  that way keeps its previous bindings. Positional (tuple or array)
+  and named (struct or table) shapes follow `query`'s rules.
+
+  A statement is reusable: each call binds its own params on top of
+  the prepared statement, and no explicit clearing is needed between
+  calls - public users never call the internal `clear-bindings`.
+
+  Raises when the stmt is already closed, when the params are neither
+  shape, on a bind failure (an out-of-range index names the statement's
+  param count, an absent name raises, an integer type band violation
+  names the value), and on a duckdb execution error after the
+  statement's bindings are torn down. Binds are not interpolated into
+  SQL text."
+  [stmt &opt params]
   (default params [])
   (execute* stmt params))

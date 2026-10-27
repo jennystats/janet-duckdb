@@ -33,7 +33,10 @@ matrix and the error taxonomy. Binding truth: `janet-duckdb.janet`
 Public surface (everything else in the module is internal):
 
 ```
-(open path &opt config-map)     -> db handle      (:memory: default)
+(open path &opt config-map)     -> db handle      (path defaults :memory:,
+                                                   but must still be
+                                                   passed; (open) is a
+                                                   compile error)
 (connect db)                    -> conn handle
 (query conn sql &opt params)    -> result handle
 (rows result &opt keywordize coll-type) -> array of structs|tuples
@@ -159,7 +162,10 @@ Public surface (everything else in the module is internal):
   until the SQL pins one; the bind now infers the type from the value.
 - Statements are reusable: `execute` binds fresh params each call;
   `clear-bindings` (internal) resets between rounds. Public users
-  re-execute without clearing.
+  re-execute without clearing. Omitted params bind an empty tuple,
+  which is correct only for a statement that takes none - a
+  parameterised statement reused that way keeps its previous bindings
+  (measured on 0.1.3).
 
 ## 5. Type matrix
 
