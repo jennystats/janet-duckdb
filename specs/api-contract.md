@@ -149,6 +149,12 @@ Public surface (everything else in the module is internal):
   string "null" to carry that text). The json module's `:null`
   keyword is reserved: it always binds SQL NULL in any position;
   bind the string ":null" to carry that literal text.
+- **A union member cannot be NULL**: `[tag nil]` and `[tag :null]`
+  raise a `duckdb:` VALIDATION error naming the member, because
+  duckdb's C API cannot construct a NULL union member - bind the
+  whole-union NULL (`nil` for the parameter) instead; the read side
+  still decodes a NULL member as `[tag nil]`, so that pair is not
+  bindable back as a member value (the B1 cell).
 - **Band rule for ns-scale binds**: plain doubles beyond the ±2^53
   exact band cannot cross the ffi int64 boundary - neither `int/s64`
   nor the ffi layer accepts them. Bind such values as s64-wrapped
@@ -197,7 +203,7 @@ are the module's keywords (`:int`, `:timestamp`, ...).
 | STRUCT | struct (immutable) | struct/table (keyword or string keys; a missing declared field raises) |
 | MAP | table (mutable; NULL-valued entries drop - Janet dictionaries cannot carry nil values) | struct/table (keyword keys stringify; keys cannot be NULL) |
 | ARRAY | tuple of fixed size | array/tuple of declared size |
-| UNION | `[tag value]` pair | same pair |
+| UNION | `[tag value]` pair | same pair (a nil or `:null` member raises - the C API cannot construct it; bind the whole-union NULL) |
 | UUID | raw hugeint pair (16 bytes, no double conversion) | - |
 
 Cuts, raising on read: BIT and BIGNUM raise "type not supported";
@@ -231,7 +237,7 @@ this module because SQL passes through unchanged:
 
 | class | source | message shape |
 |---|---|---|
-| VALIDATION | wrapper misuse: bad coll-type, out-of-range parameter index, unknown parameter name, wrong array length, unknown union tag, non-date struct | `duckdb: ...` naming the offending value and the requirement |
+| VALIDATION | wrapper misuse: bad coll-type, out-of-range parameter index, unknown parameter name, wrong array length, unknown union tag, NULL union member, non-date struct | `duckdb: ...` naming the offending value and the requirement |
 | DUCKDB | the engine: syntax, missing tables, constraint and IO failures, prepare failures | duckdb's own message, prefixed `duckdb <error-type>:` with the typed keyword (query path) or `duckdb: ...` (prepare/execute path); never swallowed |
 | ENVIRONMENT | libduckdb absent or unloadable | names `libs/install-duckdb.sh` or `$DUCKDB_LIB` (with the D1 caveat above) |
 
@@ -313,7 +319,11 @@ Changes:
   recorded in section 5: integer division/modulo by zero raises
   instead of returning NULL, and an untyped NULL column reports
   SQLNULL (still decoded as nil). The union-parameter bind leak (81
-  bytes per bind) is closed.
+  bytes per bind) is closed. A union member bound nil (or the `:null`
+  keyword) raises a `duckdb:` VALIDATION error naming the member
+  instead of crashing the process: duckdb's union constructor returns
+  NULL for a NULL member and that NULL reached the bind unchecked. The
+  read side still decodes a NULL member as `[tag nil]`.
 - **v1.7 (0.1.3)**: uninferrable parameters bind by the value's own
   type - string VARCHAR, whole number BIGINT, other number DOUBLE,
   boolean BOOLEAN; any other value raises naming its type. duckdb

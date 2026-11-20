@@ -869,13 +869,26 @@
     (errorf "duckdb: parameter type unknown and no column type is implied by a %s value"
             (type janet-value))))
 
+(defn/typed value-refused {:args [:string] :ret :any} [type-name]
+  "Value-construction refusal: duckdb's C value constructors return
+  NULL for input they refuse (a NULL or type-mismatched child value,
+  invalid UTF-8, an out-of-range count), and duckdb_bind_value takes
+  the pointer unchecked - NULL crashes the process at the bind. The
+  refusal raises here as a VALIDATION error instead."
+  (errorf (string "duckdb: %s value construction was refused by duckdb"
+                  " - a NULL or type-mismatched child value cannot bind;"
+                  " bind the whole-value NULL instead")
+          type-name))
+
 (defn/typed janet-to-duckdb-value {:args [:any :any :any] :ret :any} [janet-value simplified-type logical-type-ptr]
   "Encode a janet value to a duckdb_value under the parameter's
   simplified logical type; nil encodes NULL, as does the :null
   keyword (json decode's null shape, for round-trip fidelity). Simple
   types go to their scalar constructors, complex types recurse. An
-  unknown type raises with the add-a-cast-in-SQL hint; the caller
-  owns the returned pointer and must destroy it."
+  unknown type raises with the add-a-cast-in-SQL hint; a construction
+  duckdb refuses raises a `duckdb:` VALIDATION error naming the type,
+  so a NULL pointer never reaches the caller. The caller owns the
+  returned pointer and must destroy it."
   # returns a duckdb_value ptr; caller must destroy-value-ptr it
   (cond
     (or (nil? janet-value) (= janet-value :null)) (duckdb_create_null_value)
@@ -924,24 +937,30 @@
                 (array/push ptrs
                             (janet-to-duckdb-value (struct-field-value janet-value (get keys i))
                                                    (get types i) child-ptr))))
-            (duckdb_create_struct_value logical-type-ptr (ffi/write @[:ptr count] ptrs))))
+            (or (duckdb_create_struct_value logical-type-ptr
+                                            (ffi/write @[:ptr count] ptrs))
+                (value-refused "struct"))))
         :list
         (let [len (length janet-value)
               child-meta (meta :child-type)
               child-ptr (duckdb_list_type_child_type logical-type-ptr)]
           (defer (destroy-logical-type-ptr child-ptr)
             (if (zero? len)
-              (duckdb_create_list_value child-ptr (ffi/write @[:ptr 0] @[]) 0)
+              (or (duckdb_create_list_value child-ptr (ffi/write @[:ptr 0] @[]) 0)
+                  (value-refused "list"))
               (let [ptrs (array/new len)]
                 (defer (each v ptrs (destroy-value-ptr v))
                   (each v janet-value
                     (array/push ptrs (janet-to-duckdb-value v child-meta child-ptr)))
-                  (duckdb_create_list_value child-ptr (ffi/write @[:ptr len] ptrs) len))))))
+                  (or (duckdb_create_list_value child-ptr
+                                                (ffi/write @[:ptr len] ptrs) len)
+                      (value-refused "list")))))))
         :map
         (let [count (length janet-value)]
           (if (zero? count)
-            (duckdb_create_map_value logical-type-ptr (ffi/write @[:ptr 0] @[])
-                                      (ffi/write @[:ptr 0] @[]) 0)
+            (or (duckdb_create_map_value logical-type-ptr (ffi/write @[:ptr 0] @[])
+                                         (ffi/write @[:ptr 0] @[]) 0)
+                (value-refused "map"))
             (let [key-ptr (duckdb_map_type_key_type logical-type-ptr)
                   val-ptr (duckdb_map_type_value_type logical-type-ptr)]
               (defer (do (destroy-logical-type-ptr key-ptr) (destroy-logical-type-ptr val-ptr))
@@ -955,10 +974,11 @@
                     (array/push key-ptrs (janet-to-duckdb-value (if (keyword? k) (string k) k)
                                                                (meta :key-type) key-ptr))
                     (array/push val-ptrs (janet-to-duckdb-value v (meta :val-type) val-ptr)))
-                  (duckdb_create_map_value logical-type-ptr
-                                           (ffi/write @[:ptr count] key-ptrs)
-                                           (ffi/write @[:ptr count] val-ptrs)
-                                           count))))))
+                  (or (duckdb_create_map_value logical-type-ptr
+                                               (ffi/write @[:ptr count] key-ptrs)
+                                               (ffi/write @[:ptr count] val-ptrs)
+                                               count)
+                      (value-refused "map")))))))
         :array
         (let [expected (meta :array-size)]
           (unless (= (length janet-value) expected)
@@ -969,7 +989,9 @@
             (defer (each v ptrs (destroy-value-ptr v))
               (each v janet-value
                 (array/push ptrs (janet-to-duckdb-value v (meta :child-type) child-ptr)))
-              (duckdb_create_array_value child-ptr (ffi/write @[:ptr expected] ptrs) expected))))
+              (or (duckdb_create_array_value child-ptr
+                                             (ffi/write @[:ptr expected] ptrs) expected)
+                  (value-refused "array")))))
         :union
         (let [tag-keys (meta :tag-keys)
               [tag value] janet-value
@@ -983,7 +1005,12 @@
             # not consumed, so it is destroyed here (2.0 upstream fixed the
             # identical leak client-side).
             (defer (destroy-value-ptr duckdb-val)
-              (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val))))
+              (or (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val)
+                  (errorf (string "duckdb: union member %q cannot be NULL - a union"
+                                  " member read as nil is not bindable back as a"
+                                  " member value; bind the whole-union NULL instead"
+                                  " (union members %q)")
+                          tag tag-keys)))))
         :unknown
         # duckdb leaves a parameter it cannot infer as :unknown and expects
         # the client to supply the type. Infer from the janet value, then
@@ -1014,6 +1041,10 @@
     (let [ltype-ptr (duckdb_param_logical_type prepared-ptr param-idx)]
       (defer (destroy-logical-type-ptr ltype-ptr)
         (def value-ptr (janet-to-duckdb-value janet-value cached-type ltype-ptr))
+        (when (nil? value-ptr)
+          (errorf (string "duckdb: parameter %d value construction was refused"
+                          " by duckdb - a NULL reaches duckdb_bind_value as a crash")
+                  param-idx))
         (defer (destroy-value-ptr value-ptr)
           (when (= (duckdb_bind_value prepared-ptr param-idx value-ptr) DuckDBError)
             (errorf "duckdb: failed to bind parameter %d" param-idx)))))))

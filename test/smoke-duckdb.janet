@@ -547,6 +547,39 @@
   (assert (and (= rc 0) (string/find "idempotent" msg))
           (string "double-close must stay idempotent, got rc " rc ": " msg)))
 
+# -- B1 (CR-duckdb-8 fix): a NULL union member is a validation refusal -------
+# duckdb's C API cannot construct a NULL union member: create_union_value
+# returns NULL for a mixed-in SQLNULL value, and before the guard that NULL
+# reached duckdb_bind_value and killed the process (exit 139). The bind must
+# raise a duckdb: VALIDATION error naming the member, the process must
+# survive, and the same connection must still bind a valid union member.
+(let [[rc msg] (subprobe (string (probe-common)
+  "(try (duckdb/query conn \"SELECT ?::UNION(a INTEGER, b VARCHAR) AS u\"
+                       [@[:a nil]])
+      ([e] (print \"duckdb-sub \" e)))
+   (def row (duckdb/first-row
+     (duckdb/query conn \"SELECT ?::UNION(a INTEGER, b VARCHAR) AS u\"
+                       [@[:a 42]])))
+   (print \"duckdb-after \" (get (get row :u) 1))"))]
+  (assert-no-crash rc msg "B1 union member nil")
+  (assert (string/find "union member :a cannot be NULL" msg)
+          (string "B1: message must name the member, got: " msg))
+  (assert (string/find "duckdb-after 42" msg)
+          (string "B1: a valid union bind must follow, got: " msg)))
+(let [[rc msg] (subprobe (string (probe-common)
+  "(try (duckdb/query conn \"SELECT ?::UNION(a INTEGER, b VARCHAR) AS u\"
+                       [@[:a :null]])
+      ([e] (print \"duckdb-sub \" e)))
+   (print \"duckdb-after alive\")"))]
+  (assert-no-crash rc msg "B1 union member :null")
+  (assert (string/find "union member :a cannot be NULL" msg)
+          (string "B1: :null must refuse with the same message, got: " msg))
+  (assert (string/find "duckdb-after alive" msg)
+          (string "B1: the process must survive the refusal, got: " msg)))
+# the documented remedy: bind the whole-union NULL (nil for the parameter)
+(roundtrip-row "SELECT (?::UNION(a INTEGER, b VARCHAR) IS NULL) AS n" [nil]
+  {:n true})
+
 # -- uninferrable parameter types (0.1.3) ------------------------------------
 # duckdb leaves a parameter it cannot infer as :unknown and expects the
 # client to supply the type. The bind infers it from the value; a value with
