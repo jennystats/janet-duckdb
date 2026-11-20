@@ -10,4 +10,3 @@ include:
       module_name: "duckdb"
       janet_setup: "libs/install-duckdb.sh"
       native_needs: "duckdb"
-      pm_expected_red: true
