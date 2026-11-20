@@ -192,6 +192,7 @@
 (ffi/defbind duckdb_create_float :ptr [input :float])
 (ffi/defbind duckdb_create_double :ptr [input :double])
 (ffi/defbind duckdb_create_varchar :ptr [text :string])
+(ffi/defbind duckdb_create_blob :ptr [data :ptr length :uint64])
 (ffi/defbind duckdb_create_date :ptr [input duckdb-date])
 (ffi/defbind duckdb_create_time :ptr [input duckdb-time])
 (ffi/defbind duckdb_create_time_tz_value :ptr [input duckdb-time-tz])
@@ -328,9 +329,16 @@
     {:hours hours :minutes minutes :seconds seconds :micros micros
      :session-timezone-offset offset}))
 
-(defn/typed janet-from-timestamp {:args [:any] :ret :number} [duckdb-timestamp]
-  "duckdb timestamp (epoch micros) to a plain number."
-  (int/to-number (first duckdb-timestamp)))
+(defn/typed janet-from-timestamp {:args [:any :string] :ret :number} [duckdb-timestamp type-name]
+  "duckdb timestamp (epoch micros) to a plain number; a value beyond
+  the ±2^53 exact-double band raises a `duckdb:` error naming the
+  type, the value and the band - a legal engine value that the
+  double band cannot decode exactly."
+  (def micros (first duckdb-timestamp))
+  (if (<= n64-min micros n64-max)
+    (int/to-number micros)
+    (errorf "duckdb: %s read %q is beyond the exact-double band [-9007199254740992, 9007199254740992] (epoch micros)"
+            type-name micros)))
 
 (defn/typed janet-from-timestamp-ns {:args [:any] :ret :any} [duckdb-timestamp]
   "duckdb ns timestamp to a plain number inside the ±2^53 band;
@@ -466,7 +474,7 @@
       :ubigint [:uint64 janet-from-uint64]
       :float [:float nil]
       :double [:double nil]
-      :timestamp [duckdb-timestamp janet-from-timestamp]
+      :timestamp [duckdb-timestamp |(janet-from-timestamp $ "TIMESTAMP")]
       :date [duckdb-date janet-from-date]
       :time [duckdb-time janet-from-time]
       :interval [duckdb-interval janet-from-interval]
@@ -475,8 +483,8 @@
       :varchar [duckdb-string-t janet-from-string]
       :blob [duckdb-string-t janet-from-blob]
       :decimal [nil nil]
-      :timestamp_s [duckdb-timestamp-s janet-from-timestamp]
-      :timestamp_ms [duckdb-timestamp-ms janet-from-timestamp]
+      :timestamp_s [duckdb-timestamp-s |(janet-from-timestamp $ "TIMESTAMP_S")]
+      :timestamp_ms [duckdb-timestamp-ms |(janet-from-timestamp $ "TIMESTAMP_MS")]
       :timestamp_ns [duckdb-timestamp-ns janet-from-timestamp-ns]
       :enum [nil nil]
       :list [nil nil]
@@ -487,7 +495,7 @@
       :union [nil nil]
       :bit [nil nil]
       :time_tz [duckdb-time-tz janet-from-time-tz]
-      :timestamp_tz [duckdb-timestamp janet-from-timestamp]
+      :timestamp_tz [duckdb-timestamp |(janet-from-timestamp $ "TIMESTAMP_TZ")]
       :any [nil nil]
       :unknown [nil nil]
       :bignum [nil nil]
@@ -909,7 +917,14 @@
       :float (duckdb_create_float janet-value)
       :double (duckdb_create_double janet-value)
       :varchar (duckdb_create_varchar (check-utf8 janet-value "VARCHAR"))
-      :blob (duckdb_create_varchar (check-utf8 janet-value "BLOB"))
+      # blob values carry raw string bytes: duckdb_create_blob takes data
+      # plus an explicit length, so NULs and non-UTF-8 bytes bind (the old
+      # VARCHAR -> BLOB cast lane was ascii-only and refused the rest)
+      :blob (if (string? janet-value)
+              (or (duckdb_create_blob janet-value (length janet-value))
+                  (value-refused "BLOB"))
+              (errorf "duckdb: BLOB parameters must be raw-byte strings, got %q"
+                      janet-value))
       :date (duckdb_create_date (janet-to-date janet-value))
       :time (duckdb_create_time (janet-to-time janet-value))
       :time_tz (duckdb_create_time_tz_value (janet-to-time-tz janet-value))

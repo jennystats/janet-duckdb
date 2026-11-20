@@ -316,6 +316,33 @@
 (assert-eq (urow :u) [(int/u64 "1") (int/s64 "-9223372036854775808")] "uuid raw pair")
 (assert (not (deep= (urow :u) (urow :v))) "distinct uuids distinct pairs")
 
+# -- S1: TIMESTAMP/TIMESTAMPTZ reads beyond the ±2^53 micros band --------------
+# the exact band edge (2^53 micros, 2255-06-05 23:47:34.740992) reads as a
+# plain number; one micro past it raises a `duckdb:` error naming the type,
+# the value and the band. Edge values CLI-verified: 9007199254740992/93
+(assert-eq (get (duckdb/first-row
+  (duckdb/query conn "SELECT TIMESTAMP '2255-01-01 00:00:00' + INTERVAL 13477654740992 MICROSECONDS AS t")) :t)
+  9007199254740992 "S1 timestamp at the exact band edge reads")
+(assert-raises
+  (fn [] (duckdb/first-row
+    (duckdb/query conn "SELECT TIMESTAMP '2255-01-01 00:00:00' + INTERVAL 13477654740993 MICROSECONDS AS t")))
+  "beyond the exact-double band")
+(assert-raises
+  (fn [] (duckdb/first-row
+    (duckdb/query conn "SELECT TIMESTAMP '2255-01-01 00:00:00' + INTERVAL 13477654740993 MICROSECONDS AS t")))
+  "TIMESTAMP")
+# the same two cells on the timestamptz read path (exact micros via s64 bind)
+(roundtrip-row "SELECT ?::TIMESTAMP WITH TIME ZONE AS t" [(int/s64 "9007199254740992")]
+  {:t 9007199254740992})
+(assert-raises
+  (fn [] (duckdb/first-row
+    (duckdb/query conn "SELECT ?::TIMESTAMP WITH TIME ZONE AS t" [(int/s64 "9007199254740993")])))
+  "beyond the exact-double band")
+(assert-raises
+  (fn [] (duckdb/first-row
+    (duckdb/query conn "SELECT ?::TIMESTAMP WITH TIME ZONE AS t" [(int/s64 "9007199254740993")])))
+  "TIMESTAMP_TZ")
+
 # -- pack-columns-f32: zero-row result -----------------------------------------
 (duckdb/exec conn "CREATE TABLE ccz (a DOUBLE, b DOUBLE)")
 (def pz (duckdb/pack-columns-f32 conn "SELECT a, b FROM ccz"))
@@ -408,11 +435,24 @@
 (duckdb/exec conn "INSERT INTO blb VALUES (from_hex('00ffc3'))")
 (assert-eq (duckdb/first-row (duckdb/query conn "SELECT b FROM blb"))
   {:b [0 255 195]} "T5 blob reads unsigned bytes")
-# bind lane boundary: duckdb converts STRING -> BLOB ascii-only; a
-# non-ascii byte must arrive via SQL (from_hex) or file import
-(assert-raises (fn [] (duckdb/query conn "SELECT ?::BLOB AS b" ["ÿ"]))
-                "Invalid byte encountered")
+# -- S2: BLOB binds are raw string bytes (S2 fix) ------------------------------
+# duckdb_create_blob takes data + length, so any string bytes bind: NUL,
+# high bytes, non-UTF-8 - the old ascii-only STRING -> BLOB cut is gone
 (roundtrip-row "SELECT ?::BLOB AS b" ["ab"] {:b [97 98]})
+(roundtrip-row "SELECT ?::BLOB AS b" ["a\0b"] {:b [97 0 98]})
+(roundtrip-row "SELECT ?::BLOB AS b" ["ÿ"] {:b [195 191]})
+# BLOB as a union member binds and reads like any other member
+(roundtrip-row "SELECT ?::UNION(a BLOB, b VARCHAR) AS u" [@[:a "abc"]]
+  {:u [:a [97 98 99]]})
+# BLOB inside containers (struct field, list element, map value)
+(roundtrip-row "SELECT ?::STRUCT(b BLOB) AS s" [{:b "abc"}] {:s {:b [97 98 99]}})
+(roundtrip-row "SELECT ?::BLOB[] AS l" [@["abc"]] {:l @[[97 98 99]]})
+(roundtrip-row "SELECT ?::MAP(VARCHAR, BLOB) AS m" [{"k" "abc"}]
+  {:m @{"k" [97 98 99]}})
+# the only remaining cannot-be-NULL union refusals are genuine NULL members
+(assert-raises (fn [] (duckdb/query conn "SELECT ?::UNION(a BLOB, b VARCHAR) AS u"
+                                     [@[:a nil]]))
+               "union member :a cannot be NULL")
 
 # -- B1: string_t long-read lane - NUL-bearing long values exact ---------------
 # >12-byte VARCHAR/BLOB with any 0x00 must read exact; multi-row calls
@@ -473,9 +513,10 @@
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::VARCHAR AS v"
                                    [(string "a" (string/from-bytes 0) "b")]))
                 "embedded NUL")
-(assert-raises (fn [] (duckdb/query conn "SELECT ?::BLOB AS b"
-                                   [(string "a" (string/from-bytes 0) "b")]))
-                "embedded NUL")
+# S2: a BLOB bind takes raw bytes with an explicit length, so NULs bind
+# (the VARCHAR boundary check does not apply; the D3 raise is VARCHAR-only)
+(roundtrip-row "SELECT ?::BLOB AS b"
+  [(string "a" (string/from-bytes 0) "b")] {:b [97 0 98]})
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::MAP(VARCHAR, INTEGER) AS m" [{:null 1}]))
                 "MAP keys cannot be NULL")
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::MAP(INTEGER, INTEGER) AS m" [{:null 1}]))
@@ -514,10 +555,14 @@
   (assert-no-crash rc msg "B2 invalid-UTF8 VARCHAR bind")
   (assert (string/find "UTF-8" msg) "B2: error must name the UTF-8 requirement"))
 (let [[rc msg] (subprobe (string (probe-common)
-  "(try (duckdb/query conn \"SELECT ?::BLOB AS v\" [(string \"\\xFF\" \"x\")])
-     ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B2 invalid-UTF8 BLOB bind")
-  (assert (string/find "UTF-8" msg) "B2: error must name the UTF-8 requirement"))
+  "(def row (duckdb/first-row
+     (duckdb/query conn \"SELECT ?::BLOB AS v\" [(string \"\\xFF\" \"x\")])))
+   (printf \"BLOB-BYTES %q\" (get row :v))"))]
+  # S2: a BLOB bind is a raw-byte lane - invalid UTF-8 no longer raises,
+  # the bytes bind and read back exact (255 then 120); the process survives
+  (assert (= rc 0) (string "B2: raw-byte bind must not crash, got rc " rc ": " msg))
+  (assert (string/find "BLOB-BYTES (255 120)" msg)
+          (string "B2: raw bytes must bind and read exact, got: " msg)))
 (let [[rc msg] (subprobe (string (probe-common)
   "(def stmt (duckdb/prepare conn \"SELECT 1 AS x\"))
    (:close stmt)
