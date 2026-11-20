@@ -95,7 +95,7 @@ The import fails with an actionable message if none loads.
 ## The bundled engine: what's inside
 
 The pinned `libduckdb` statically links the `icu` and `parquet`
-extensions only. Other core extensions - notably `httpfs` (S3/HTTP
+extensions only. Other core extensions - `httpfs` (S3/HTTP
 Parquet reads) and `quack` (remote serving and ATTACH) - are not
 bundled. Enable them with a one-time install inside your own SQL:
 

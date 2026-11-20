@@ -53,7 +53,7 @@
 (def types-row
   (duckdb/first-row
     (duckdb/query conn "SELECT born, seen, tags, props, feel, amt FROM people WHERE id = 1")))
-(assert-eq (types-row :born) {:year 1990 :month 3 :month-day 0} "date -> janet date struct (0-based)")
+(assert-eq (types-row :born) {:year 1990 :month 3 :month-day 0} "date -> Janet date struct (0-based)")
 (assert-eq (types-row :props) {:k "a" :n 2 :ok true} "struct -> struct (bool field true)")
 (assert-eq (types-row :tags) @["x" "y"] "list -> array")
 (assert-eq (types-row :feel) "happy" "enum -> string")
@@ -168,7 +168,7 @@
 (def cc-jj (num/pack-columns-f32 cc-arrs))
 (def cc-cc2 (duckdb/pack-columns-f32 conn "SELECT a, b FROM cc ORDER BY a"))
 (assert-eq (string (cc-cc2 :ptr)) (string (cc-jj :ptr))
-  "C-to-C packed == janet-arrays packed (byte-identical)")
+  "C-to-C packed == packed from Janet arrays (byte-identical)")
 (assert-raises (fn [] (duckdb/pack-columns-f32 conn "SELECT a, b, c::VARCHAR FROM cc")) "DOUBLE")
 
 # -- bind-side matrix cells (positional round-trips) --------------------------
@@ -212,7 +212,7 @@
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::DECIMAL(4,2) AS d" [12.34]))
                "unsupported complex type for binding")
 
-# -- B1: time_tz mod-24h wrap --------------------------------------------------
+# -- time_tz mod-24h wrap --------------------------------------------------
 # UTC micros >= 24h or exactly 0 must wrap to [0, 24h), never hours 24/28
 (duckdb/exec conn "CREATE TABLE tz2 (t TIME WITH TIME ZONE)")
 (duckdb/exec conn "INSERT INTO tz2 VALUES (TIMETZ '00:00:00+00'),
@@ -316,13 +316,13 @@
 (assert-eq (urow :u) [(int/u64 "1") (int/s64 "-9223372036854775808")] "uuid raw pair")
 (assert (not (deep= (urow :u) (urow :v))) "distinct uuids distinct pairs")
 
-# -- S1: TIMESTAMP/TIMESTAMPTZ reads beyond the ±2^53 micros band --------------
+# -- TIMESTAMP/TIMESTAMPTZ reads beyond the ±2^53 micros band --------------
 # the exact band edge (2^53 micros, 2255-06-05 23:47:34.740992) reads as a
 # plain number; one micro past it raises a `duckdb:` error naming the type,
 # the value and the band. Edge values CLI-verified: 9007199254740992/93
 (assert-eq (get (duckdb/first-row
   (duckdb/query conn "SELECT TIMESTAMP '2255-01-01 00:00:00' + INTERVAL 13477654740992 MICROSECONDS AS t")) :t)
-  9007199254740992 "S1 timestamp at the exact band edge reads")
+  9007199254740992 "timestamp at the exact band edge reads")
 (assert-raises
   (fn [] (duckdb/first-row
     (duckdb/query conn "SELECT TIMESTAMP '2255-01-01 00:00:00' + INTERVAL 13477654740993 MICROSECONDS AS t")))
@@ -349,7 +349,7 @@
 (assert-eq [(pz :nrow) (pz :ncol) (pz :bytes)] [0 2 0] "zero-row packed, no error")
 (assert-eq (pz :column-names) (tuple "a" "b") "zero-row keeps column names")
 
-# -- D1: import-time guard ordering (subprocess probe) ------------------------
+# -- import-time guard ordering (subprocess probe) ------------------------
 # A bad $DUCKDB_LIB must surface the actionable message naming the installer,
 # not the raw dlopen error: the load probe runs before ffi/context
 (def d1-out "/tmp/duckdb-smoke-d1.txt")
@@ -359,19 +359,19 @@
   " janet -e '(def [_ e] (protect (import jennystats/duckdb :as duckdb))) (print e)' > " d1-out " 2>&1")])
 (def d1-msg (string/trim (string (slurp d1-out))))
 (assert (string/find "install-duckdb.sh" d1-msg)
-        (string "D1: guard must name the installer, got: " d1-msg))
+        (string "guard must name the installer, got: " d1-msg))
 (when (os/stat d1-out) (os/rm d1-out))
 
-# -- N1-N3: bind taxonomy ------------------------------------------------------
-# N1: struct binds accept string keys (json decode shape); missing fields raise
+# -- bind taxonomy ------------------------------------------------------
+# struct binds accept string keys (json decode shape); missing fields raise
 (roundtrip-row "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st" [{"k" "a" "n" 2}]
   {:st {:k "a" :n 2}})
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st" [{:k "a"}]))
                 "struct field :n missing")
-# N2: params-shape guard message fires (was %T, a format bug)
+# params-shape guard message fires (was %T, a format bug)
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::INTEGER AS i" "not-params"))
                 "params must be tuple/array")
-# N3: integer out-of-range binds raise with the band, never wrap silently
+# integer out-of-range binds raise with the band, never wrap silently
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::UTINYINT AS u" [300])) "out of range")
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::TINYINT AS t" [128])) "out of range")
 # UBIGINT: plain double beyond the 2^53 band raises with the band message;
@@ -386,14 +386,14 @@
 # MAP keyword keys stringify (named-params path parity)
 (roundtrip-row "SELECT ?::MAP(VARCHAR, INTEGER) AS m" [{:k1 10}] {:m @{"k1" 10}})
 
-# -- B1: a present struct field binds, false included --------------------------
+# -- a present struct field binds, false included --------------------------
 (roundtrip-row "SELECT ?::STRUCT(k BOOLEAN) AS v" [{:k false}] {:v {:k false}})
 (roundtrip-row "SELECT ?::STRUCT(a STRUCT(b STRUCT(c BOOLEAN))) AS v"
   [{:a {:b {:c false}}}] {:v {:a {:b {:c false}}}})
 (roundtrip-row "SELECT ?::STRUCT(k BOOLEAN)[] AS l" [[{:k false}]] {:l @[{:k false}]})
 (with [nstmt (duckdb/prepare conn "SELECT $p::STRUCT(k BOOLEAN) AS v")]
   (with [nres (duckdb/execute nstmt {:p {:k false}})]
-    (assert-eq (duckdb/first-row nres) {:v {:k false}} "B1 named-params false field")))
+    (assert-eq (duckdb/first-row nres) {:v {:k false}} "named-params false field binds")))
 (roundtrip-row "SELECT ?::STRUCT(k BOOLEAN) AS v" [@{:k false}] {:v {:k false}})
 # controls: no silent-NULL conflation in any of these shapes
 (roundtrip-row "SELECT ?::STRUCT(k BOOLEAN) AS v" [{"k" false}] {:v {:k false}})
@@ -405,24 +405,24 @@
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::STRUCT(k BOOLEAN) AS v" [{:x 1}]))
                 "struct field :k missing")
 
-# -- T1: UBIGINT read lane - u64 wrapper beyond the band -----------------------
+# -- UBIGINT read lane - u64 wrapper beyond the band -----------------------
 (roundtrip-row "SELECT ?::UBIGINT AS u" [(int/u64 "18000000000000000000")]
   {:u (int/u64 "18000000000000000000")})
 
-# -- T2: config map accepts tables ----------------------------------------------
+# -- config map accepts tables ----------------------------------------------
 (with [db2 (duckdb/open ":memory:" @{:threads 1})]
   (with [c2 (duckdb/connect db2)]
     (assert-eq (duckdb/first-row (duckdb/query c2 "SELECT 41 + 1 AS v")) {:v 42}
-               "T2 table config opens and queries")))
+               "table config opens and queries")))
 
-# -- T3: json :null keyword binds SQL NULL -------------------------------------
+# -- json :null keyword binds SQL NULL -------------------------------------
 (import jennystats/json)
 (roundtrip-row "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st"
   [{:k "a" :n :null}] {:st {:k "a" :n nil}})
 (roundtrip-row "SELECT ?::STRUCT(k VARCHAR, n INTEGER) AS st"
   [(json/decode "{\"k\":\"a\",\"n\":null}")] {:st {:k "a" :n nil}})
 
-# -- T4: non-integral / non-boolean / non-finite typed binds raise -------------
+# -- non-integral / non-boolean / non-finite typed binds raise -------------
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::INTEGER AS i" [0.5]))
                 "is not an integer")
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::INTEGER AS i" [math/inf]))
@@ -430,12 +430,12 @@
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::INTEGER AS i" [math/nan]))
                 "is not finite")
 
-# -- T5: BLOB reads deliver unsigned bytes [0, 255] ----------------------------
+# -- BLOB reads deliver unsigned bytes [0, 255] ----------------------------
 (duckdb/exec conn "CREATE TABLE blb (b BLOB)")
 (duckdb/exec conn "INSERT INTO blb VALUES (from_hex('00ffc3'))")
 (assert-eq (duckdb/first-row (duckdb/query conn "SELECT b FROM blb"))
-  {:b [0 255 195]} "T5 blob reads unsigned bytes")
-# -- S2: BLOB binds are raw string bytes (S2 fix) ------------------------------
+  {:b [0 255 195]} "blob reads unsigned bytes")
+# -- BLOB binds are raw string bytes ------------------------------
 # duckdb_create_blob takes data + length, so any string bytes bind: NUL,
 # high bytes, non-UTF-8 - the old ascii-only STRING -> BLOB cut is gone
 (roundtrip-row "SELECT ?::BLOB AS b" ["ab"] {:b [97 98]})
@@ -454,7 +454,7 @@
                                      [@[:a nil]]))
                "union member :a cannot be NULL")
 
-# -- B1: string_t long-read lane - NUL-bearing long values exact ---------------
+# -- string_t long-read lane - NUL-bearing long values exact ---------------
 # >12-byte VARCHAR/BLOB with any 0x00 must read exact; multi-row calls
 # must not die on one bad value. Permanent fixtures: nulv/nulb carry
 # >=20-byte NUL-bearing values every suite run (the string_t seam can
@@ -466,55 +466,55 @@
 (def nul-row (duckdb/first-row (duckdb/query conn "SELECT v, b FROM nulv")))
 (assert-eq (nul-row :v)
   (string "Axxxxxxxxx" (string/from-bytes 0) "Byyyyyyyy")
-  "B1 long VARCHAR, interior NUL, exact")
+  "long VARCHAR, interior NUL, exact")
 (assert-eq (nul-row :b)
   (tuple 0x41 0x42 0x43 0x00 0x44 0x45 0x46 0x47 0x48 0x49 0x4A 0x4B 0x4C 0x00 0x4D)
-  "B1 long BLOB, interior NUL, exact")
+  "long BLOB, interior NUL, exact")
 (assert-eq ((duckdb/first-row (duckdb/query conn "SELECT from_hex('004142434445464748494A4B4C') AS b")) :b)
   (tuple 0x00 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x49 0x4A 0x4B 0x4C)
-  "B1 13-byte BLOB, NUL first, exact")
+  "13-byte BLOB, NUL first, exact")
 (assert-eq ((duckdb/first-row (duckdb/query conn "SELECT from_hex('4142434445464748494A4B4C00') AS b")) :b)
   (tuple 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x49 0x4A 0x4B 0x4C 0x00)
-  "B1 13-byte BLOB, NUL last, exact")
+  "13-byte BLOB, NUL last, exact")
 (assert-eq ((duckdb/first-row (duckdb/query conn "SELECT from_hex('0041424344454647484941') AS b")) :b)
   (tuple 0x00 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x49 0x41)
-  "B1 12-byte inline BLOB with NUL (inline lane stays exact)")
+  "12-byte inline BLOB with NUL (inline lane stays exact)")
 (assert-eq ((duckdb/first-row (duckdb/query conn "SELECT rpad(chr(122),20,chr(121)) AS v")) :v)
-  "zyyyyyyyyyyyyyyyyyyy" "B1 NUL-free long VARCHAR (sound, not lucky)")
+  "zyyyyyyyyyyyyyyyyyyy" "NUL-free long VARCHAR (sound, not lucky)")
 (duckdb/exec conn "CREATE TABLE nulb (b BLOB)")
 (duckdb/exec conn "INSERT INTO nulb VALUES (from_hex('4142434445464748494A4B4C')),
   (from_hex('004142434445464748494A4B4C'))")
 (assert-eq (duckdb/rows (duckdb/query conn "SELECT b FROM nulb"))
   @[{:b (tuple 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x49 0x4A 0x4B 0x4C)}
     {:b (tuple 0x00 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x49 0x4A 0x4B 0x4C)}]
-  "B1 multi-row: row 2 NUL-bearing, whole rows call exact")
+  "multi-row: row 2 NUL-bearing, whole rows call exact")
 # file-import lane: read_blob on a NUL-bearing fixture file
 (def nulfile "/tmp/duckdb-smoke-nul.bin")
 (spit nulfile (string/from-bytes 0 65 66 0 67 68 69 70 0 71 72 73 74 75 76 77 78 79 80 0))
 (assert-eq ((duckdb/first-row (duckdb/query conn (string "SELECT content FROM read_blob('" nulfile "')"))) :content)
   (tuple 0 65 66 0 67 68 69 70 0 71 72 73 74 75 76 77 78 79 80 0)
-  "B1 file-import lane: NUL-bearing blob reads exact")
+  "file-import lane: NUL-bearing blob reads exact")
 (when (os/stat nulfile) (os/rm nulfile))
 
-# -- B2: NULL-valued MAP entries drop on read ----------------------------------
-# documented cut, not a defect to fix: janet dictionaries cannot carry
+# -- NULL-valued MAP entries drop on read ----------------------------------
+# documented cut, not a defect to fix: Janet dictionaries cannot carry
 # nil values (structs AND tables drop them), so a NULL-valued MAP
 # entry has no representable read target - the key vanishes
 (assert-eq (duckdb/first-row (duckdb/query conn "SELECT MAP {chr(107): NULL} AS m"))
-  {:m @{}} "B2 NULL-valued MAP entry drops (documented cut)")
+  {:m @{}} "NULL-valued MAP entry drops (documented cut)")
 (assert-eq (duckdb/first-row (duckdb/query conn "SELECT MAP {chr(107): 1, chr(106): NULL} AS m"))
-  {:m @{"k" 1}} "B2 NULL-valued second entry drops, first exact")
+  {:m @{"k" 1}} "NULL-valued second entry drops, first exact")
 (assert-eq (duckdb/first-row (duckdb/query conn "SELECT MAP {chr(107): NULL, chr(106): 2} AS m"))
-  {:m @{"j" 2}} "B2 NULL first entry drops, second exact")
+  {:m @{"j" 2}} "NULL first entry drops, second exact")
 (roundtrip-row "SELECT ?::MAP(VARCHAR, INTEGER) AS m" [{:k 1 :j :null}]
   {:m @{"k" 1}})
 
-# -- D3: bind-boundary messages ------------------------------------------------
+# -- bind-boundary messages ------------------------------------------------
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::VARCHAR AS v"
                                    [(string "a" (string/from-bytes 0) "b")]))
                 "embedded NUL")
-# S2: a BLOB bind takes raw bytes with an explicit length, so NULs bind
-# (the VARCHAR boundary check does not apply; the D3 raise is VARCHAR-only)
+# a BLOB bind takes raw bytes with an explicit length, so NULs bind
+# (the VARCHAR boundary check does not apply; the raise is VARCHAR-only)
 (roundtrip-row "SELECT ?::BLOB AS b"
   [(string "a" (string/from-bytes 0) "b")] {:b [97 0 98]})
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::MAP(VARCHAR, INTEGER) AS m" [{:null 1}]))
@@ -522,8 +522,8 @@
 (assert-raises (fn [] (duckdb/query conn "SELECT ?::MAP(INTEGER, INTEGER) AS m" [{:null 1}]))
                 "MAP keys cannot be NULL")
 
-# -- B2/B3: crash-class subprocess probes -------------------------------------
-# invalid-UTF8 binds and use-after-close ops must raise clean janet
+# -- crash-class subprocess probes -------------------------------------
+# invalid-UTF8 binds and use-after-close ops must raise clean Janet
 # errors in a child process - exit 0 with a message, never SIGSEGV (139)
 # valid multibyte UTF-8 stays green on the guarded lane
 (roundtrip-row "SELECT ?::VARCHAR AS v" ["héllo 'quoted'"] {:v "héllo 'quoted'"})
@@ -552,38 +552,38 @@
 (let [[rc msg] (subprobe (string (probe-common)
   "(try (duckdb/query conn \"SELECT ?::VARCHAR AS v\" [(string \"\\xFF\" \"x\")])
      ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B2 invalid-UTF8 VARCHAR bind")
-  (assert (string/find "UTF-8" msg) "B2: error must name the UTF-8 requirement"))
+  (assert-no-crash rc msg "invalid-UTF8 VARCHAR bind raises clean")
+  (assert (string/find "UTF-8" msg) "error must name the UTF-8 requirement"))
 (let [[rc msg] (subprobe (string (probe-common)
   "(def row (duckdb/first-row
      (duckdb/query conn \"SELECT ?::BLOB AS v\" [(string \"\\xFF\" \"x\")])))
    (printf \"BLOB-BYTES %q\" (get row :v))"))]
-  # S2: a BLOB bind is a raw-byte lane - invalid UTF-8 no longer raises,
+  # a BLOB bind is a raw-byte lane - invalid UTF-8 no longer raises,
   # the bytes bind and read back exact (255 then 120); the process survives
-  (assert (= rc 0) (string "B2: raw-byte bind must not crash, got rc " rc ": " msg))
+  (assert (= rc 0) (string "raw-byte bind must not crash, got rc " rc ": " msg))
   (assert (string/find "BLOB-BYTES (255 120)" msg)
-          (string "B2: raw bytes must bind and read exact, got: " msg)))
+          (string "raw bytes must bind and read exact, got: " msg)))
 (let [[rc msg] (subprobe (string (probe-common)
   "(def stmt (duckdb/prepare conn \"SELECT 1 AS x\"))
    (:close stmt)
    (try (duckdb/execute stmt) ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B3 execute after stmt close")
-  (assert (string/find "already closed" msg) "B3: message must say already closed"))
+  (assert-no-crash rc msg "execute after stmt close")
+  (assert (string/find "already closed" msg) "message must say already closed"))
 (let [[rc msg] (subprobe (string (probe-common)
   "(def stmt (duckdb/prepare conn \"SELECT ?::INTEGER AS x\"))
    (:close stmt)
    (try (duckdb/bind stmt 1 5) ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B3 bind after stmt close"))
+  (assert-no-crash rc msg "bind after stmt close"))
 (let [[rc msg] (subprobe (string (probe-common)
   "(:close conn)
    (try (duckdb/query conn \"SELECT 1 AS x\") ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B3 query after conn close")
-  (assert (string/find "already closed" msg) "B3: message must say already closed"))
+  (assert-no-crash rc msg "query after conn close")
+  (assert (string/find "already closed" msg) "message must say already closed"))
 (let [[rc msg] (subprobe (string (probe-common)
   "(:close db)
    (try (duckdb/connect db) ([e] (print \"duckdb-sub \" e)))"))]
-  (assert-no-crash rc msg "B3 connect after db close")
-  (assert (string/find "already closed" msg) "B3: message must say already closed"))
+  (assert-no-crash rc msg "connect after db close")
+  (assert (string/find "already closed" msg) "message must say already closed"))
 # double-close stays idempotent on all three
 (let [[rc msg] (subprobe (string (probe-common)
   "(:close conn) (:close conn)
@@ -606,21 +606,21 @@
      (duckdb/query conn \"SELECT ?::UNION(a INTEGER, b VARCHAR) AS u\"
                        [@[:a 42]])))
    (print \"duckdb-after \" (get (get row :u) 1))"))]
-  (assert-no-crash rc msg "B1 union member nil")
+  (assert-no-crash rc msg "union member nil refusal")
   (assert (string/find "union member :a cannot be NULL" msg)
-          (string "B1: message must name the member, got: " msg))
+          (string "message must name the member, got: " msg))
   (assert (string/find "duckdb-after 42" msg)
-          (string "B1: a valid union bind must follow, got: " msg)))
+          (string "a valid union bind must follow, got: " msg)))
 (let [[rc msg] (subprobe (string (probe-common)
   "(try (duckdb/query conn \"SELECT ?::UNION(a INTEGER, b VARCHAR) AS u\"
                        [@[:a :null]])
       ([e] (print \"duckdb-sub \" e)))
    (print \"duckdb-after alive\")"))]
-  (assert-no-crash rc msg "B1 union member :null")
+  (assert-no-crash rc msg "union member :null refusal")
   (assert (string/find "union member :a cannot be NULL" msg)
-          (string "B1: :null must refuse with the same message, got: " msg))
+          (string ":null must refuse with the same message, got: " msg))
   (assert (string/find "duckdb-after alive" msg)
-          (string "B1: the process must survive the refusal, got: " msg)))
+          (string "the process must survive the refusal, got: " msg)))
 # the documented remedy: bind the whole-union NULL (nil for the parameter)
 (roundtrip-row "SELECT (?::UNION(a INTEGER, b VARCHAR) IS NULL) AS n" [nil]
   {:n true})
@@ -636,24 +636,24 @@
 (def p "/tmp/jdd-smoke.parquet")
 (assert-eq 3
   (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) LIMIT ?::BIGINT" [p 3]))
-  "u1 uninferrable path+limit binds (integer -> BIGINT)")
+  "uninferrable path+limit binds (integer -> BIGINT)")
 (assert-eq 1
   (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE id = ?::BIGINT" [p 2]))
-  "u2 uninferrable path+integer filter binds")
+  "uninferrable path+integer filter binds")
 (assert-eq 5
   (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE id < ?::DOUBLE" [p 5.0]))
-  "u3 uninferrable path+double binds (float -> DOUBLE)")
+  "uninferrable path+double binds (float -> DOUBLE)")
 (assert-eq 2
   (length (pq-rows "SELECT a.id FROM read_parquet(?::VARCHAR) a
                     JOIN read_parquet(?::VARCHAR) b USING (id) LIMIT ?::BIGINT" [p p 2]))
-  "u4 two uninferrable path parameters bind")
+  "two uninferrable path parameters bind")
 (assert-eq [6 0]
   [(length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)" [p true]))
    (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)" [p false]))]
-  "u5 uninferrable boolean binds")
+  "uninferrable boolean binds")
 (assert-eq 5
   (length (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) LIMIT 5" [p]))
-  "u6 path-last single parameter still binds")
+  "path-last single parameter still binds")
 (assert-raises (fn [] (pq-rows "SELECT * FROM read_parquet(?::VARCHAR) WHERE (?::BOOLEAN)"
                                [p @[:not-a-bind-value]]))
   "no column type is implied")
