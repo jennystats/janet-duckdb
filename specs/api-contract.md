@@ -1,11 +1,11 @@
-# Spec - janet-duckdb public API contract (v1.7, libduckdb 1.5.6)
+# Spec - janet-duckdb public API contract (v1.8, libduckdb 2.0.1)
 
 Prose contract (a formal specification language is not the right tool
 here; the duckdb C API is the external truth). Canonical signatures: the module
 docstrings in `janet-duckdb.janet`. This document adds what
 signatures cannot carry: preconditions, effects, ownership, the type
 matrix and the error taxonomy. Binding truth: `janet-duckdb.janet`
-(ffi/defbind + wrappers, pinned to libduckdb v1.5.6 from
+(ffi/defbind + wrappers, pinned to libduckdb v2.0.1 from
 `libs/install-duckdb.sh`); external truth: the duckdb C API.
 
 ## 1. Layering
@@ -13,11 +13,12 @@ matrix and the error taxonomy. Binding truth: `janet-duckdb.janet`
 - **Janet wrapper layer** (janet-duckdb.janet): argument validation, handle
   construction, actionable errors, type decode and value encode. All
   argument validation lives here - the C layer trusts its caller.
-- **C API layer** (libduckdb v1.5.6): reached only through
+- **C API layer** (libduckdb v2.0.1): reached only through
   `ffi/defbind` bindings with verbatim duckdb symbol names. The
-  `duckdb_result` struct layout is version-coupled to 1.5.x (six
-  fields: `:uint64 :uint64 :uint64 :ptr :ptr :ptr`); the coupling is
-  quarantined inside this module - callers never touch the layout.
+  `duckdb_result` struct layout comes from the stable C API v1 surface
+  (six fields: `:uint64 :uint64 :uint64 :ptr :ptr :ptr`), identical in
+  1.5.6 and 2.0.1; the coupling is quarantined inside this module -
+  callers never touch the layout.
 - **Handle structs**: every handle (db, conn, stmt, result) is a
   struct with `:ptr`, a `:close` function and `:assert-valid`, which
   raises on any use after close. `with` works through `:close` on all
@@ -175,6 +176,7 @@ are the module's keywords (`:int`, `:timestamp`, ...).
 | duckdb type | read -> Janet | bind from Janet |
 |---|---|---|
 | NULL cell | nil | nil |
+| SQLNULL (2.0 logical type) | nil for every row (the vector data is never read) | not bindable; bind nil to a typed parameter instead |
 | BOOLEAN | true/false | bool |
 | TINYINT..BIGINT | number (bigint beyond 2^53 stays a core s64) | integer in band |
 | UTINYINT..UBIGINT | number (UBIGINT u64-wrapped beyond 2^53, symmetric with BIGINT) | integer in band (int/s64, int/u64 wrappers beyond) |
@@ -202,11 +204,28 @@ Cuts, raising on read: BIT and BIGNUM raise "type not supported";
 TIME_NS values in duckdb TIMESTAMP_NS columns read fine - the
 unsupported ns form is duckdb's separate TIME_NS id, which raises
 the generic "unknown type id" error. Binding edge types (a bare
-string or integer literal parameter) require a cast in SQL.
+string or integer literal parameter) require a cast in SQL. The
+2.0.1 enum also carries TIMESTAMP_TZ_NS (id 42); no SQL cast target
+produces such a column, and a column of that type from a file would
+raise "unknown type id 42" like TIME_NS - the same documented cut.
 
 Known decode asymmetries, deliberate: MAP columns read as mutable
 tables, STRUCT columns as immutable structs; UUID keeps the exact
 16-byte pair where HUGEINT converts to double.
+
+Engine semantics that moved with the 2.0 pin, user-visible through
+this module because SQL passes through unchanged:
+
+- **Integer division and modulo by zero raise** (`Invalid Input
+  Error: Division by zero`); 1.5.6 returned NULL for both. `TRY(...)`
+  or `SET error_on_division_by_zero=false` restores the NULL result.
+- **An untyped NULL column reports the SQLNULL type** rather than an
+  inferred INTEGER. The module decodes it as nil, so reads are
+  unchanged.
+- **Bind-completeness errors reword**: a prepared statement executed
+  with no parameters now says `Values were not provided for the
+  following parameters: 1` instead of `Expected 1 parameters, but
+  none were supplied`. Both are DUCKDB-class errors.
 
 ## 6. Error taxonomy
 
@@ -232,20 +251,49 @@ consume it directly. Requires janet-num 0.1.1+ (jennystats).
 
 ## 8. Version coupling
 
-libduckdb v1.5.6 is pinned by `libs/install-duckdb.sh` (sha256
+libduckdb v2.0.1 is pinned by `libs/install-duckdb.sh` (sha256
 verified per platform: linux-amd64, linux-arm64, osx-universal,
-windows-amd64; the pins are the release's published digests, and
-linux-amd64 is additionally verified byte-exact by full download).
-The pin moved 1.5.5 -> 1.5.6 on 2026-10-16 (1.5.6 is a bugfix and
-security release on the same Variegata line). The `duckdb_result` struct layout and the
-`duckdb_fetch_chunk` symbol name were re-verified against 1.5.6
-(struct-layout cells, the NUL-bearing string_t sweep, describe-columns
-shapes, pack-columns-f32 chunking, TIMESTAMPTZ decode - all exact, no
-drift). The layout and symbol
-name are version-coupled to 1.5.x; a libduckdb upgrade requires
-re-probing the C API surface (binding set, signatures, struct
-layouts) before this module can follow. No support is offered for
-duckdb below 1.5.x.
+windows-amd64; every platform's digest was recomputed from a full
+download and equals the release metadata's, not copied). The pin
+moved 1.5.6 -> 2.0.1 on 2026-11-20, the first bugfix release of the
+2.0 line and the agreed wait condition set after the 2.0.0 review.
+The installer's asset scheme changed with 2.0: releases now ship
+`duckdb-shared-libs-<platform>.tar.gz` (the 1.5 line shipped
+`libduckdb-<platform>.zip`); the library file names are unchanged.
+
+The C API surface was re-verified mechanically, not by assumption:
+
+- **Symbols**: all 95 bound symbols resolve in the 2.0.1 binary, and
+  their declarations are byte-identical between the v1.5.6 and
+  v2.0.1 headers.
+- **Structs**: all 18 bound struct layouts are identical between the
+  two headers; the `duckdb.h` shipped in the release tarball is
+  byte-identical to the header at tag v2.0.1.
+- **Enums**: 42 `DUCKDB_TYPE_*` values unchanged; the 2.0.1 enum adds
+  `TIMESTAMP_TZ_NS` (42), which no SQL cast target produces.
+- **Result struct at runtime**: 48 bytes, three counters then three
+  pointers, verified on a 2500-row chunked result (column count and
+  row streaming land exactly; the deprecated counters stay zero for
+  streaming results, as in 1.5.6).
+- **Full-surface sweep**: 45 cells covering every supported type read
+  through a real query and, where bindable, round-tripped through a
+  prepared parameter, compared against the 2.0.1 CLI as the oracle -
+  all exact, and cell-for-cell identical to the same sweep against
+  1.5.6 (no silent semantic drift in the type surface).
+
+The `duckdb_result` layout and the `duckdb_fetch_chunk` symbol name
+come from the stable C API v1 surface; 1.5.6 already carried the same
+declarations (the API version macro in the 2.0.1 header still reads
+1.5.6). A future libduckdb upgrade re-runs the same mechanical checks
+before the pin moves: symbol resolution, struct diff, enum diff, load
+probe, sweep.
+
+The module also closes the union-parameter bind leak it inherited. A
+temporary `duckdb_value` per union bind was never destroyed (81 bytes
+per bind, measured through glibc `mallinfo2`); it is now destroyed
+after `duckdb_create_union_value` copies it, and the same measurement
+shows no linear growth. 1.5.6 still loads, but 2.0.1 is the verified
+pin.
 
 ## Change protocol
 
@@ -256,6 +304,16 @@ bump, smoke updates, consumers re-verified, one commit.
 
 Changes:
 
+- **v1.8 (0.1.4, 2026-11-20)**: the libduckdb pin moved 1.5.6 -> 2.0.1
+  (first bugfix of the 2.0 line). Installer asset scheme and all four
+  platform digests updated; the C API surface re-verified (95/95
+  symbols, 18/18 struct layouts, 42 enum values plus one added, result
+  struct at runtime, 45-cell type sweep against the CLI - section 8).
+  Two behavior changes reach callers through the engine and are
+  recorded in section 5: integer division/modulo by zero raises
+  instead of returning NULL, and an untyped NULL column reports
+  SQLNULL (still decoded as nil). The union-parameter bind leak (81
+  bytes per bind) is closed.
 - **v1.7 (0.1.3)**: uninferrable parameters bind by the value's own
   type - string VARCHAR, whole number BIGINT, other number DOUBLE,
   boolean BOOLEAN; any other value raises naming its type. duckdb
@@ -316,7 +374,7 @@ Changes:
   missing fields; MAP keyword keys stringify; DATE partial structs
   raise naming the field; multi-statement truncation and the
   empty-SQL result documented as duckdb's own query-boundary
-  behaviour.
+  behavior.
 - **v1.1 (2026-10-15)**: TIME_TZ read cell met (the decoder returned
   a table against its typed struct contract and raised; now
   UTC-normalised fields plus `:session-timezone-offset` in seconds);

@@ -236,6 +236,13 @@
 (duckdb/exec conn "CREATE TABLE cutt AS SELECT CAST('10:30:00' AS TIME_NS) AS t")
 (assert-raises (fn [] (duckdb/rows (duckdb/query conn "SELECT t FROM cutt"))) "unknown type id")
 
+# -- untyped NULL column (duckdb 2.0 SQLNULL type) -----------------------------
+# 1.5.6 typed an untyped NULL as INTEGER; 2.0 reports SQLNULL (id 36), which
+# every row of is NULL by definition. Reads must stay nil, not raise.
+(def null-res (duckdb/query conn "SELECT NULL AS v"))
+(assert-eq (null-res :column-types) (tuple :sqlnull) "untyped NULL reports :sqlnull")
+(assert-eq (duckdb/rows null-res) @[{:v nil}] "untyped NULL row decodes as nil")
+
 # -- describe-columns: plain + logical shapes ----------------------------------
 (duckdb/exec conn "CREATE TABLE dtab (i INTEGER, l VARCHAR[],
   s STRUCT(k VARCHAR, n INTEGER), e mood, d DECIMAL(4,2),

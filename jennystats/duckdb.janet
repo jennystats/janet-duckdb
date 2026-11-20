@@ -5,8 +5,9 @@
 # Attribution: type marshaling, handle discipline and vector decode derive
 # from https://github.com/sbocq/janet-duckdb (MIT, (c) sbocq).
 #
-# Pinned C API: duckdb v1.5.6 (libduckdb.so, installer libs/install-duckdb.sh).
-# The duckdb_result struct layout below is version-coupled to 1.5.x.
+# Pinned C API: duckdb v2.0.1 (libduckdb.so, installer libs/install-duckdb.sh).
+# The duckdb_result struct layout below is version-coupled to the 2.x line
+# (re-verified field by field against the v2.0.1 header and at runtime).
 #
 # Lib resolution: $DUCKDB_LIB -> ~/.local/lib/duckdb/libduckdb.so -> dlopen search.
 # Import fails with an actionable message if none loads.
@@ -57,7 +58,7 @@
 (ffi/context lib)
 
 #==------------------------------------------------------------------------==#
-# Constants + structs (duckdb v1.5.6 C API)
+# Constants + structs (duckdb v2.0.1 C API)
 #==------------------------------------------------------------------------==#
 
 (def DuckDBSuccess 0)
@@ -67,7 +68,7 @@
 (def duckdb-connection (ffi/struct :ptr))
 (def duckdb-config (ffi/struct :ptr))
 (def duckdb-prepared-statement (ffi/struct :ptr))
-# internal result struct - VERSION-COUPLED to 1.5.x
+# internal result struct - VERSION-COUPLED to the 1.5.x/2.x stable layout
 (def duckdb-result (ffi/struct :uint64 :uint64 :uint64 :ptr :ptr :ptr))
 (def duckdb-date (ffi/struct :int32))
 (def duckdb-date-struct (ffi/struct :int32 :int8 :int8))
@@ -563,6 +564,10 @@
          :tag-keys (tuple/slice tags) :tag-types (tuple/slice types)})
       :unknown
       {:simple false :type-key type-key}
+      :sqlnull
+      # duckdb 2.0's NULL type: every row is NULL by definition, so the
+      # type carries no shape to describe.
+      {:simple false :type-key type-key}
       (errorf "duckdb: type not supported: %q" type-key))))
 
 (defn/typed logical-type-simplify {:args [:struct] :ret :any} [ltype]
@@ -678,6 +683,10 @@
             (when (duckdb_validity_row_is_valid validity-mask (++ row-idx))
               (def tag-id (get tag-ids i))
               [(get tag-keys tag-id) (get (get vals (inc tag-id)) i)])))
+        :sqlnull
+        # duckdb 2.0's NULL type: every row is NULL by definition and the
+        # vector data is never dereferenced - decode without reading data.
+        (seq [i :range [0 len]] nil)
         (errorf "duckdb: type not supported: %q" (ltype :type-key))))))
 
 #==------------------------------------------------------------------------==#
@@ -970,7 +979,11 @@
           (def member-ptr (duckdb_union_type_member_type logical-type-ptr tag-idx))
           (defer (destroy-logical-type-ptr member-ptr)
             (def duckdb-val (janet-to-duckdb-value value (get (meta :tag-types) tag-idx) member-ptr))
-            (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val)))
+            # duckdb copies the member value into the union; the temporary is
+            # not consumed, so it is destroyed here (2.0 upstream fixed the
+            # identical leak client-side).
+            (defer (destroy-value-ptr duckdb-val)
+              (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val))))
         :unknown
         # duckdb leaves a parameter it cannot infer as :unknown and expects
         # the client to supply the type. Infer from the janet value, then
