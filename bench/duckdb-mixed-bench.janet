@@ -2,7 +2,7 @@
 # duckdb-mixed-bench - 1M-row mixed-type table (text/int/float): in-process
 # module vs CLI pushdown route. Identical complex query on both routes
 # (join + filter + group-by + having + window rank + order, output capped
-# at 25 rows so janet-side materialization stays honest but bounded).
+# at 25 rows so janet-side materialisation stays bounded but measured).
 # Usage: janet bench/duckdb-mixed-bench.janet [rows n-module n-cli]
 # Defaults: 1M rows, 20 module runs, 10 cli runs. For 100M rows pass
 # fewer runs - per-query cost is scan-bound and scales with rows.

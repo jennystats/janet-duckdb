@@ -67,7 +67,7 @@ import gives the same call sites with the `duckdb/` prefix.
 - **describe-columns**: per-column type metadata, with an optional
   logical mode where nested types arrive as tagged tuples.
 
-The behavioral specification is `specs/api-contract.md` (v1.8): the
+The behavioural specification is `specs/api-contract.md` (v1.9): the
 full type matrix, preconditions, ownership, error taxonomy and the
 libduckdb version coupling.
 

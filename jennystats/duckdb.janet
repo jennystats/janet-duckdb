@@ -1265,7 +1265,7 @@
   `config-map` is an optional struct or table of duckdb configuration
   options. Names are case-insensitive and values must be
   string-coercible (strings, numbers and keywords coerce). Janet
-  structs and tables cannot hold nil, so a nil-valued option simply is
+  structs and tables cannot hold nil, so a nil-valued option is
   not there.
 
   The handle carries `:close` (idempotent - a second close is a no-op;

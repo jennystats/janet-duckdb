@@ -592,7 +592,7 @@
   (assert (and (= rc 0) (string/find "idempotent" msg))
           (string "double-close must stay idempotent, got rc " rc ": " msg)))
 
-# -- B1 (CR-duckdb-8 fix): a NULL union member is a validation refusal -------
+# -- a NULL union member is a validation refusal, not a crash -----------------
 # duckdb's C API cannot construct a NULL union member: create_union_value
 # returns NULL for a mixed-in SQLNULL value, and before the guard that NULL
 # reached duckdb_bind_value and killed the process (exit 139). The bind must
