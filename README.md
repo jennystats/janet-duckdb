@@ -67,7 +67,7 @@ import gives the same call sites with the `duckdb/` prefix.
 - **describe-columns**: per-column type metadata, with an optional
   logical mode where nested types arrive as tagged tuples.
 
-The behavioural specification is `specs/api-contract.md` (v1.7): the
+The behavioural specification is `specs/api-contract.md` (v1.9): the
 full type matrix, preconditions, ownership, error taxonomy and the
 libduckdb version coupling.
 
@@ -77,7 +77,7 @@ The module binds duckdb's C API over ffi, so it needs the pinned
 shared library (verified sha256, four platforms, idempotent):
 
 ```bash
-libs/install-duckdb.sh   # libduckdb 1.5.6 -> ~/.local/lib/duckdb/
+libs/install-duckdb.sh   # libduckdb 2.0.1 -> ~/.local/lib/duckdb/
 ```
 
 Module dependencies: [janet-num](https://github.com/jennystats/janet-num)
@@ -95,7 +95,7 @@ The import fails with an actionable message if none loads.
 ## The bundled engine: what's inside
 
 The pinned `libduckdb` statically links the `icu` and `parquet`
-extensions only. Other core extensions - notably `httpfs` (S3/HTTP
+extensions only. Other core extensions - `httpfs` (S3/HTTP
 Parquet reads) and `quack` (remote serving and ATTACH) - are not
 bundled. Enable them with a one-time install inside your own SQL:
 
@@ -131,9 +131,10 @@ bind-lane rows.
   band).
 - DECIMAL params bind unsupported: duckdb reports the parameter
   without a usable logical type. DECIMAL reads are supported.
-- libduckdb is pinned to 1.5.6. The result-struct layout and symbol
-  names are version-coupled to 1.5.x; an upgrade needs the C API
-  surface re-verified before the module can follow.
+- libduckdb is pinned to 2.0.1. The result-struct layout and symbol
+  names are version-coupled to the stable C API v1 surface (identical
+  in 1.5.6 and 2.0.1); an upgrade needs that surface re-verified
+  before the module can follow.
 
 ## Alternatives
 

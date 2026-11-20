@@ -1,26 +1,31 @@
-# jennystats/duckdb.janet  -  in-process duckdb for janet via core ffi (no jpm, no C build).
+# jennystats/duckdb.janet  -  in-process duckdb for Janet via core ffi (no jpm, no C build).
 #
 # Port of sbocq/janet-duckdb (MIT) adapted to a typed-contract stack:
 # defn/typed contracts, no judge, single self-contained file, pinned C API.
 # Attribution: type marshaling, handle discipline and vector decode derive
 # from https://github.com/sbocq/janet-duckdb (MIT, (c) sbocq).
 #
-# Pinned C API: duckdb v1.5.6 (libduckdb.so, installer libs/install-duckdb.sh).
-# The duckdb_result struct layout below is version-coupled to 1.5.x.
+# Pinned C API: duckdb v2.0.1 (libduckdb.so, installer libs/install-duckdb.sh).
+# The duckdb_result struct layout below is version-coupled to the 2.x line
+# (re-verified field by field against the v2.0.1 header and at runtime).
 #
 # Lib resolution: $DUCKDB_LIB -> ~/.local/lib/duckdb/libduckdb.so -> dlopen search.
 # Import fails with an actionable message if none loads.
 #
-# Public API (thin, stable - everything else is internal):
+# Public API (thin, stable - everything else is internal by convention:
+# Janet exposes every top-level binding, so the typed cores and bind
+# helpers are importable but are not supported API):
 #   (open path &opt config-map)   -> db      {:ptr :close}
 #   (connect db)                  -> conn    {:ptr :close}
 #   (query conn sql &opt params)   -> result  {:ptr :column-names :column-types :close}
 #   (rows result &opt keywordize coll-type)   -> array of structs|tuples
 #   (first-row result ...)        -> struct|tuple | nil
 #   (columns result)               -> column-major arrays (xgboost feed)
+#   (describe-columns result &opt logical?) -> per-column type metadata
 #   (exec conn sql &opt params)    -> rows changed
 #   (prepare conn sql)             -> stmt    {:ptr :param-names :param-types :close}
 #   (execute stmt &opt params)     -> result  (positional tuple/array | named struct/table)
+#   (pack-columns-f32 conn sql)    -> f32 packed handle (janet-num kernel)
 #   (library-version)              -> string
 # Bind contract (0.1.3): a parameter duckdb reports as :unknown binds by the
 # value's own type - string VARCHAR, whole number BIGINT, other number
@@ -57,7 +62,7 @@
 (ffi/context lib)
 
 #==------------------------------------------------------------------------==#
-# Constants + structs (duckdb v1.5.6 C API)
+# Constants + structs (duckdb v2.0.1 C API)
 #==------------------------------------------------------------------------==#
 
 (def DuckDBSuccess 0)
@@ -67,7 +72,7 @@
 (def duckdb-connection (ffi/struct :ptr))
 (def duckdb-config (ffi/struct :ptr))
 (def duckdb-prepared-statement (ffi/struct :ptr))
-# internal result struct - VERSION-COUPLED to 1.5.x
+# internal result struct - VERSION-COUPLED to the 1.5.x/2.x stable layout
 (def duckdb-result (ffi/struct :uint64 :uint64 :uint64 :ptr :ptr :ptr))
 (def duckdb-date (ffi/struct :int32))
 (def duckdb-date-struct (ffi/struct :int32 :int8 :int8))
@@ -191,6 +196,7 @@
 (ffi/defbind duckdb_create_float :ptr [input :float])
 (ffi/defbind duckdb_create_double :ptr [input :double])
 (ffi/defbind duckdb_create_varchar :ptr [text :string])
+(ffi/defbind duckdb_create_blob :ptr [data :ptr length :uint64])
 (ffi/defbind duckdb_create_date :ptr [input duckdb-date])
 (ffi/defbind duckdb_create_time :ptr [input duckdb-time])
 (ffi/defbind duckdb_create_time_tz_value :ptr [input duckdb-time-tz])
@@ -230,7 +236,7 @@
 #==------------------------------------------------------------------------==#
 
 (defn/typed deref-c-string-ptr {:args [:any] :ret :string} [char-ptr]
-  "Read a char* handed back by duckdb as a janet string; ffi/read
+  "Read a char* handed back by duckdb as a Janet string; ffi/read
   needs a pointer cell, so the raw pointer is wrapped first."
   # ffi/read :string expects a char** - wrap the char* in a ptr cell
   (ffi/read :string (ffi/write :ptr char-ptr)))
@@ -282,7 +288,7 @@
   (table/to-struct (merge d t)))
 
 (defn/typed janet-to-date {:args [:struct] :ret :any} [janet-date]
-  "Date fields of a janet date struct to a duckdb_date; raises when
+  "Date fields of a Janet date struct to a duckdb_date; raises when
   the struct carries no date fields or lacks one of :year :month
   :month-day."
   (each k [:year :month :month-day]
@@ -293,18 +299,18 @@
   (duckdb_to_date date))
 
 (defn/typed janet-from-date {:args [:any] :ret :struct} [date]
-  "duckdb_date to a janet date struct (date fields only)."
+  "duckdb_date to a Janet date struct (date fields only)."
   (janet-date-from-parts [(duckdb_from_date date) nil]))
 
 (defn/typed janet-to-time {:args [:struct] :ret :any} [janet-date]
-  "Time fields of a janet date struct to a duckdb_time; raises when
+  "Time fields of a Janet date struct to a duckdb_time; raises when
   the struct carries no time fields."
   (def [_ time] (janet-date-to-parts janet-date))
   (if time (duckdb_to_time time)
     (errorf "duckdb: no time fields in %q" janet-date)))
 
 (defn/typed janet-from-time {:args [:any] :ret :struct} [duckdb-time]
-  "duckdb_time to a janet date struct (time fields only)."
+  "duckdb_time to a Janet date struct (time fields only)."
   (janet-date-from-parts [nil (duckdb_from_time duckdb-time)]))
 
 (defn/typed janet-to-time-tz {:args [:struct] :ret :any} [janet-date]
@@ -327,9 +333,16 @@
     {:hours hours :minutes minutes :seconds seconds :micros micros
      :session-timezone-offset offset}))
 
-(defn/typed janet-from-timestamp {:args [:any] :ret :number} [duckdb-timestamp]
-  "duckdb timestamp (epoch micros) to a plain number."
-  (int/to-number (first duckdb-timestamp)))
+(defn/typed janet-from-timestamp {:args [:any :string] :ret :number} [duckdb-timestamp type-name]
+  "duckdb timestamp (epoch micros) to a plain number; a value beyond
+  the ±2^53 exact-double band raises a `duckdb:` error naming the
+  type, the value and the band - a legal engine value that the
+  double band cannot decode exactly."
+  (def micros (first duckdb-timestamp))
+  (if (<= n64-min micros n64-max)
+    (int/to-number micros)
+    (errorf "duckdb: %s read %q is beyond the exact-double band [-9007199254740992, 9007199254740992] (epoch micros)"
+            type-name micros)))
 
 (defn/typed janet-from-timestamp-ns {:args [:any] :ret :any} [duckdb-timestamp]
   "duckdb ns timestamp to a plain number inside the ±2^53 band;
@@ -355,7 +368,7 @@
     (slice (ffi/read @[:uint8 len] (duckdb_string_t_data (ffi/write duckdb-string-t duckdb-string))))))
 
 (defn/typed janet-from-string {:args [:any] :ret :string} [duckdb-string]
-  "string_t to a janet string."
+  "string_t to a Janet string."
   (string/from-bytes ;(janet-bytes-from-string duckdb-string)))
 
 (defn/typed janet-from-blob {:args [:any] :ret :tuple} [duckdb-string]
@@ -465,7 +478,7 @@
       :ubigint [:uint64 janet-from-uint64]
       :float [:float nil]
       :double [:double nil]
-      :timestamp [duckdb-timestamp janet-from-timestamp]
+      :timestamp [duckdb-timestamp |(janet-from-timestamp $ "TIMESTAMP")]
       :date [duckdb-date janet-from-date]
       :time [duckdb-time janet-from-time]
       :interval [duckdb-interval janet-from-interval]
@@ -474,8 +487,8 @@
       :varchar [duckdb-string-t janet-from-string]
       :blob [duckdb-string-t janet-from-blob]
       :decimal [nil nil]
-      :timestamp_s [duckdb-timestamp-s janet-from-timestamp]
-      :timestamp_ms [duckdb-timestamp-ms janet-from-timestamp]
+      :timestamp_s [duckdb-timestamp-s |(janet-from-timestamp $ "TIMESTAMP_S")]
+      :timestamp_ms [duckdb-timestamp-ms |(janet-from-timestamp $ "TIMESTAMP_MS")]
       :timestamp_ns [duckdb-timestamp-ns janet-from-timestamp-ns]
       :enum [nil nil]
       :list [nil nil]
@@ -486,7 +499,7 @@
       :union [nil nil]
       :bit [nil nil]
       :time_tz [duckdb-time-tz janet-from-time-tz]
-      :timestamp_tz [duckdb-timestamp janet-from-timestamp]
+      :timestamp_tz [duckdb-timestamp |(janet-from-timestamp $ "TIMESTAMP_TZ")]
       :any [nil nil]
       :unknown [nil nil]
       :bignum [nil nil]
@@ -563,6 +576,10 @@
          :tag-keys (tuple/slice tags) :tag-types (tuple/slice types)})
       :unknown
       {:simple false :type-key type-key}
+      :sqlnull
+      # duckdb 2.0's NULL type: every row is NULL by definition, so the
+      # type carries no shape to describe.
+      {:simple false :type-key type-key}
       (errorf "duckdb: type not supported: %q" type-key))))
 
 (defn/typed logical-type-simplify {:args [:struct] :ret :any} [ltype]
@@ -586,7 +603,7 @@
        {})]))
 
 #==------------------------------------------------------------------------==#
-# Vector decode (chunk -> janet arrays)
+# Vector decode (chunk -> Janet arrays)
 #==------------------------------------------------------------------------==#
 
 (defn/typed janet-array-from-data {:args [:any :any :number :number :any :any] :ret :array} [data-ptr ffi-type offset len validity-mask cast-fn]
@@ -610,7 +627,7 @@
       out)))
 
 (defn/typed janet-array-from-vector {:args [:any :number :number] :ret :array} [vector-ptr offset len]
-  "Decode one vector slice to a janet array, recursing through
+  "Decode one vector slice to a Janet array, recursing through
   list, struct, map, array and union children; decimal and enum run
   through their internal representation. Raises on unsupported
   types."
@@ -678,6 +695,10 @@
             (when (duckdb_validity_row_is_valid validity-mask (++ row-idx))
               (def tag-id (get tag-ids i))
               [(get tag-keys tag-id) (get (get vals (inc tag-id)) i)])))
+        :sqlnull
+        # duckdb 2.0's NULL type: every row is NULL by definition and the
+        # vector data is never dereferenced - decode without reading data.
+        (seq [i :range [0 len]] nil)
         (errorf "duckdb: type not supported: %q" (ltype :type-key))))))
 
 #==------------------------------------------------------------------------==#
@@ -803,7 +824,7 @@
      (result :column-types))})
 
 #==------------------------------------------------------------------------==#
-# Value creation (janet -> duckdb_value, for binding)
+# Value creation (Janet -> duckdb_value, for binding)
 #==------------------------------------------------------------------------==#
 
 # plain-double bands per integer type; wrappers (int/s64, int/u64)
@@ -860,13 +881,26 @@
     (errorf "duckdb: parameter type unknown and no column type is implied by a %s value"
             (type janet-value))))
 
+(defn/typed value-refused {:args [:string] :ret :any} [type-name]
+  "Value-construction refusal: duckdb's C value constructors return
+  NULL for input they refuse (a NULL or type-mismatched child value,
+  invalid UTF-8, an out-of-range count), and duckdb_bind_value takes
+  the pointer unchecked - NULL crashes the process at the bind. The
+  refusal raises here as a VALIDATION error instead."
+  (errorf (string "duckdb: %s value construction was refused by duckdb"
+                  " - a NULL or type-mismatched child value cannot bind;"
+                  " bind the whole-value NULL instead")
+          type-name))
+
 (defn/typed janet-to-duckdb-value {:args [:any :any :any] :ret :any} [janet-value simplified-type logical-type-ptr]
-  "Encode a janet value to a duckdb_value under the parameter's
+  "Encode a Janet value to a duckdb_value under the parameter's
   simplified logical type; nil encodes NULL, as does the :null
   keyword (json decode's null shape, for round-trip fidelity). Simple
   types go to their scalar constructors, complex types recurse. An
-  unknown type raises with the add-a-cast-in-SQL hint; the caller
-  owns the returned pointer and must destroy it."
+  unknown type raises with the add-a-cast-in-SQL hint; a construction
+  duckdb refuses raises a `duckdb:` VALIDATION error naming the type,
+  so a NULL pointer never reaches the caller. The caller owns the
+  returned pointer and must destroy it."
   # returns a duckdb_value ptr; caller must destroy-value-ptr it
   (cond
     (or (nil? janet-value) (= janet-value :null)) (duckdb_create_null_value)
@@ -887,7 +921,14 @@
       :float (duckdb_create_float janet-value)
       :double (duckdb_create_double janet-value)
       :varchar (duckdb_create_varchar (check-utf8 janet-value "VARCHAR"))
-      :blob (duckdb_create_varchar (check-utf8 janet-value "BLOB"))
+      # blob values carry raw string bytes: duckdb_create_blob takes data
+      # plus an explicit length, so NULs and non-UTF-8 bytes bind (the old
+      # VARCHAR -> BLOB cast lane was ascii-only and refused the rest)
+      :blob (if (string? janet-value)
+              (or (duckdb_create_blob janet-value (length janet-value))
+                  (value-refused "BLOB"))
+              (errorf "duckdb: BLOB parameters must be raw-byte strings, got %q"
+                      janet-value))
       :date (duckdb_create_date (janet-to-date janet-value))
       :time (duckdb_create_time (janet-to-time janet-value))
       :time_tz (duckdb_create_time_tz_value (janet-to-time-tz janet-value))
@@ -915,24 +956,30 @@
                 (array/push ptrs
                             (janet-to-duckdb-value (struct-field-value janet-value (get keys i))
                                                    (get types i) child-ptr))))
-            (duckdb_create_struct_value logical-type-ptr (ffi/write @[:ptr count] ptrs))))
+            (or (duckdb_create_struct_value logical-type-ptr
+                                            (ffi/write @[:ptr count] ptrs))
+                (value-refused "struct"))))
         :list
         (let [len (length janet-value)
               child-meta (meta :child-type)
               child-ptr (duckdb_list_type_child_type logical-type-ptr)]
           (defer (destroy-logical-type-ptr child-ptr)
             (if (zero? len)
-              (duckdb_create_list_value child-ptr (ffi/write @[:ptr 0] @[]) 0)
+              (or (duckdb_create_list_value child-ptr (ffi/write @[:ptr 0] @[]) 0)
+                  (value-refused "list"))
               (let [ptrs (array/new len)]
                 (defer (each v ptrs (destroy-value-ptr v))
                   (each v janet-value
                     (array/push ptrs (janet-to-duckdb-value v child-meta child-ptr)))
-                  (duckdb_create_list_value child-ptr (ffi/write @[:ptr len] ptrs) len))))))
+                  (or (duckdb_create_list_value child-ptr
+                                                (ffi/write @[:ptr len] ptrs) len)
+                      (value-refused "list")))))))
         :map
         (let [count (length janet-value)]
           (if (zero? count)
-            (duckdb_create_map_value logical-type-ptr (ffi/write @[:ptr 0] @[])
-                                      (ffi/write @[:ptr 0] @[]) 0)
+            (or (duckdb_create_map_value logical-type-ptr (ffi/write @[:ptr 0] @[])
+                                         (ffi/write @[:ptr 0] @[]) 0)
+                (value-refused "map"))
             (let [key-ptr (duckdb_map_type_key_type logical-type-ptr)
                   val-ptr (duckdb_map_type_value_type logical-type-ptr)]
               (defer (do (destroy-logical-type-ptr key-ptr) (destroy-logical-type-ptr val-ptr))
@@ -946,10 +993,11 @@
                     (array/push key-ptrs (janet-to-duckdb-value (if (keyword? k) (string k) k)
                                                                (meta :key-type) key-ptr))
                     (array/push val-ptrs (janet-to-duckdb-value v (meta :val-type) val-ptr)))
-                  (duckdb_create_map_value logical-type-ptr
-                                           (ffi/write @[:ptr count] key-ptrs)
-                                           (ffi/write @[:ptr count] val-ptrs)
-                                           count))))))
+                  (or (duckdb_create_map_value logical-type-ptr
+                                               (ffi/write @[:ptr count] key-ptrs)
+                                               (ffi/write @[:ptr count] val-ptrs)
+                                               count)
+                      (value-refused "map")))))))
         :array
         (let [expected (meta :array-size)]
           (unless (= (length janet-value) expected)
@@ -960,7 +1008,9 @@
             (defer (each v ptrs (destroy-value-ptr v))
               (each v janet-value
                 (array/push ptrs (janet-to-duckdb-value v (meta :child-type) child-ptr)))
-              (duckdb_create_array_value child-ptr (ffi/write @[:ptr expected] ptrs) expected))))
+              (or (duckdb_create_array_value child-ptr
+                                             (ffi/write @[:ptr expected] ptrs) expected)
+                  (value-refused "array")))))
         :union
         (let [tag-keys (meta :tag-keys)
               [tag value] janet-value
@@ -970,10 +1020,19 @@
           (def member-ptr (duckdb_union_type_member_type logical-type-ptr tag-idx))
           (defer (destroy-logical-type-ptr member-ptr)
             (def duckdb-val (janet-to-duckdb-value value (get (meta :tag-types) tag-idx) member-ptr))
-            (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val)))
+            # duckdb copies the member value into the union; the temporary is
+            # not consumed, so it is destroyed here (2.0 upstream fixed the
+            # identical leak client-side).
+            (defer (destroy-value-ptr duckdb-val)
+              (or (duckdb_create_union_value logical-type-ptr tag-idx duckdb-val)
+                  (errorf (string "duckdb: union member %q cannot be NULL - a union"
+                                  " member read as nil is not bindable back as a"
+                                  " member value; bind the whole-union NULL instead"
+                                  " (union members %q)")
+                          tag tag-keys)))))
         :unknown
         # duckdb leaves a parameter it cannot infer as :unknown and expects
-        # the client to supply the type. Infer from the janet value, then
+        # the client to supply the type. Infer from the Janet value, then
         # bind through the normal path; a value with no faithful column
         # type still raises.
         (janet-to-duckdb-value janet-value (infer-param-type janet-value) logical-type-ptr)
@@ -1001,6 +1060,10 @@
     (let [ltype-ptr (duckdb_param_logical_type prepared-ptr param-idx)]
       (defer (destroy-logical-type-ptr ltype-ptr)
         (def value-ptr (janet-to-duckdb-value janet-value cached-type ltype-ptr))
+        (when (nil? value-ptr)
+          (errorf (string "duckdb: parameter %d value construction was refused"
+                          " by duckdb - a NULL reaches duckdb_bind_value as a crash")
+                  param-idx))
         (defer (destroy-value-ptr value-ptr)
           (when (= (duckdb_bind_value prepared-ptr param-idx value-ptr) DuckDBError)
             (errorf "duckdb: failed to bind parameter %d" param-idx)))))))
@@ -1142,13 +1205,13 @@
 (defn/typed pack-columns-f32 {:args [:struct :string] :ret :struct} [conn sql]
   "C-to-C column feed for packed kernels: run the query, stream its
   chunks and hand duckdb's native vector memory to janet-num's
-  interleave kernel - no janet element crosses the boundary. All
+  interleave kernel - no Janet element crosses the boundary. All
   columns must be DOUBLE; NULL becomes NaN. Returns the janet-num
   packed-handle shape {:nrow :ncol :column-names}, which
   packed-slice-f32 and the dmatrix-from-packed lane consume directly."
   # C-to-C handoff: query -> duckdb chunk vectors (already native
   # memory) -> janet-num interleave kernel -> row-major f32 packed
-  # buffer. ZERO janet elements cross the boundary. Columns must be
+  # buffer. ZERO Janet elements cross the boundary. Columns must be
   # DOUBLE; NULLs become NaN (xgboost `missing` semantics). Returns
   # the same handle shape as num/pack-columns-f32, so
   # xgboost/dmatrix-from-packed consumes it directly.
@@ -1206,7 +1269,7 @@
   `config-map` is an optional struct or table of duckdb configuration
   options. Names are case-insensitive and values must be
   string-coercible (strings, numbers and keywords coerce). Janet
-  structs and tables cannot hold nil, so a nil-valued option simply is
+  structs and tables cannot hold nil, so a nil-valued option is
   not there.
 
   The handle carries `:close` (idempotent - a second close is a no-op;
