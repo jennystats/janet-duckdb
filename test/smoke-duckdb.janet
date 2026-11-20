@@ -352,15 +352,15 @@
 # -- import-time guard ordering (subprocess probe) ------------------------
 # A bad $DUCKDB_LIB must surface the actionable message naming the installer,
 # not the raw dlopen error: the load probe runs before ffi/context
-(def d1-out "/tmp/duckdb-smoke-d1.txt")
+(def guard-out "/tmp/duckdb-smoke-guard.txt")
 (os/execute ["/bin/sh" "-c" (string
-  "DUCKDB_LIB=/tmp/nonexistent-d1/libduckdb.so"
+  "DUCKDB_LIB=/tmp/nonexistent-lib/libduckdb.so"
   " JANET_PATH=" (or (get (os/environ) "JANET_PATH") ".:tests/lib")
-  " janet -e '(def [_ e] (protect (import jennystats/duckdb :as duckdb))) (print e)' > " d1-out " 2>&1")])
-(def d1-msg (string/trim (string (slurp d1-out))))
-(assert (string/find "install-duckdb.sh" d1-msg)
-        (string "guard must name the installer, got: " d1-msg))
-(when (os/stat d1-out) (os/rm d1-out))
+  " janet -e '(def [_ e] (protect (import jennystats/duckdb :as duckdb))) (print e)' > " guard-out " 2>&1")])
+(def guard-msg (string/trim (string (slurp guard-out))))
+(assert (string/find "install-duckdb.sh" guard-msg)
+        (string "guard must name the installer, got: " guard-msg))
+(when (os/stat guard-out) (os/rm guard-out))
 
 # -- bind taxonomy ------------------------------------------------------
 # struct binds accept string keys (json decode shape); missing fields raise
